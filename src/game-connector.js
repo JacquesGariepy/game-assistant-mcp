@@ -13,14 +13,33 @@ export class GameState {
     
     // État du jeu simulé pour l'exemple
     this.simulatedState = {
-      scene: this._createMockScene(),
+      scene: null, // Sera initialisé dans initialize()
       player: this._createMockPlayer(),
       environment: this._createMockEnvironment(),
       quests: this._createMockQuests(),
     };
+    
+    // Cache pour les assets et ressources générées
+    this.assetCache = {
+      models: {},
+      textures: {},
+      materials: {}
+    };
+    
+    // Textures et matériaux par défaut
+    this.defaultTexture = null;
+    this.basicAssets = null;
   }
   
   async initialize() {
+    console.log("Initialisation de GameState...");
+    
+    // Assurer que les assets minimaux sont disponibles
+    this._ensureAssets();
+    
+    // Créer la scène mock une fois les assets disponibles
+    this.simulatedState.scene = this._createMockScene();
+    
     // Dans un cas réel, ici nous établirions une connexion avec le jeu
     // Pour cet exemple, nous utilisons des données simulées
     this.scene = this.simulatedState.scene;
@@ -28,6 +47,40 @@ export class GameState {
     this.environment = this.simulatedState.environment;
     this.quests = this.simulatedState.quests;
     this.isInitialized = true;
+    
+    console.log("GameState initialisé avec succès");
+    return true;
+  }
+  
+  /**
+   * Assure que les assets basiques sont disponibles même sans fichiers externes
+   */
+  _ensureAssets() {
+    // Créer une texture par défaut si nécessaire
+    if (!this.defaultTexture) {
+      const data = new Uint8Array([200, 200, 200, 255]); // RGBA (gris clair)
+      this.defaultTexture = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
+      this.defaultTexture.needsUpdate = true;
+    }
+    
+    // Générer des assets de base si nécessaire
+    if (!this.basicAssets) {
+      this.basicAssets = {
+        // Matériaux de base
+        materials: {
+          ground: new THREE.MeshStandardMaterial({ color: 0x228833 }),
+          player: new THREE.MeshStandardMaterial({ color: 0x1155ff }),
+          npc: new THREE.MeshStandardMaterial({ color: 0xCC5500 }),
+          container: new THREE.MeshStandardMaterial({ color: 0x885511 }),
+          building: new THREE.MeshStandardMaterial({ color: 0x999999 }),
+          temple: {
+            base: new THREE.MeshStandardMaterial({ color: 0x999999 }),
+            roof: new THREE.MeshStandardMaterial({ color: 0x777777 }),
+            column: new THREE.MeshStandardMaterial({ color: 0xAAAAAA })
+          }
+        }
+      };
+    }
     
     return true;
   }
@@ -97,6 +150,37 @@ export class GameState {
     };
   }
   
+  /**
+   * Charge les assets pour le jeu (version simulée)
+   */
+  async loadAssets() {
+    console.log("Simulation du chargement des assets...");
+    
+    // Simuler un délai de chargement
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // S'assurer que les assets de base sont initialisés
+    this._ensureAssets();
+    
+    // Simuler des textures chargées
+    const placeholderTextureData = {
+      grass: new Uint8Array([0, 150, 0, 255]), // Vert
+      dirt: new Uint8Array([120, 80, 0, 255]), // Marron
+      stone: new Uint8Array([120, 120, 120, 255]), // Gris
+      water: new Uint8Array([0, 0, 150, 255]), // Bleu
+    };
+    
+    // Créer des textures de substitution
+    for (const [name, data] of Object.entries(placeholderTextureData)) {
+      const texture = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
+      texture.needsUpdate = true;
+      this.assetCache.textures[name] = texture;
+    }
+    
+    console.log("Assets simulés chargés avec succès");
+    return true;
+  }
+  
   _checkInitialized() {
     if (!this.isInitialized) {
       throw new Error("GameState not initialized. Call initialize() first.");
@@ -104,13 +188,15 @@ export class GameState {
   }
   
   _createMockScene() {
+    console.log("Création de la scène simulée...");
+    
     // Créer une scène Three.js simulée
     const scene = new THREE.Scene();
     
     // Ajouter quelques objets à la scène
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(100, 100),
-      new THREE.MeshBasicMaterial({ color: 0x228833 })
+      this.basicAssets.materials.ground
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.5;
@@ -125,7 +211,7 @@ export class GameState {
     
     const playerBody = new THREE.Mesh(
       new THREE.BoxGeometry(1, 2, 1),
-      new THREE.MeshBasicMaterial({ color: 0x1155ff })
+      this.basicAssets.materials.player
     );
     playerBody.name = "playerBody";
     player.add(playerBody);
@@ -144,7 +230,7 @@ export class GameState {
       
       const npcBody = new THREE.Mesh(
         new THREE.BoxGeometry(1, 2, 1),
-        new THREE.MeshBasicMaterial({ color: 0xCC5500 })
+        this.basicAssets.materials.npc
       );
       npcBody.name = `npcBody_${i}`;
       npc.add(npcBody);
@@ -156,7 +242,7 @@ export class GameState {
     // Ajouter des objets interactifs
     const chest = new THREE.Mesh(
       new THREE.BoxGeometry(1, 0.8, 1.5),
-      new THREE.MeshBasicMaterial({ color: 0x885511 })
+      this.basicAssets.materials.container
     );
     chest.name = "treasureChest";
     chest.position.set(3, 0, -2);
@@ -170,7 +256,7 @@ export class GameState {
     
     const templeBase = new THREE.Mesh(
       new THREE.BoxGeometry(8, 1, 8),
-      new THREE.MeshBasicMaterial({ color: 0x999999 })
+      this.basicAssets.materials.temple.base
     );
     templeBase.name = "templeBase";
     templeBase.position.y = -0.25;
@@ -178,7 +264,7 @@ export class GameState {
     
     const templeRoof = new THREE.Mesh(
       new THREE.ConeGeometry(6, 5, 4),
-      new THREE.MeshBasicMaterial({ color: 0x777777 })
+      this.basicAssets.materials.temple.roof
     );
     templeRoof.name = "templeRoof";
     templeRoof.position.y = 3;
@@ -189,7 +275,7 @@ export class GameState {
       const angle = (i / 4) * Math.PI * 2;
       const column = new THREE.Mesh(
         new THREE.CylinderGeometry(0.5, 0.5, 4),
-        new THREE.MeshBasicMaterial({ color: 0xAAAAAA })
+        this.basicAssets.materials.temple.column
       );
       column.name = `templeColumn_${i}`;
       column.position.set(
@@ -204,6 +290,17 @@ export class GameState {
     temple.userData = { type: "building", interactive: true, contains: "puzzle" };
     scene.add(temple);
     
+    // Ajouter un éclairage de base
+    const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+    ambientLight.name = "ambientLight";
+    scene.add(ambientLight);
+    
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(1, 1, 1);
+    directionalLight.name = "directionalLight";
+    scene.add(directionalLight);
+    
+    console.log("Scène simulée créée avec succès");
     return scene;
   }
   
@@ -291,6 +388,36 @@ export class GameState {
     ];
   }
   
+  /**
+   * Équipe un objet sur le personnage joueur
+   * @param {string} itemId - ID de l'objet dans l'inventaire
+   * @returns {boolean} - Succès de l'opération
+   */
+  equipItem(itemId) {
+    const item = this.player.inventory.find(i => i.id === itemId);
+    if (!item) return false;
+    
+    item.equipped = true;
+    console.log(`Équipement de ${item.name} sur le personnage`);
+    return true;
+  }
+  
+  /**
+   * Déplace le joueur vers une position
+   * @param {object} position - {x, y, z}
+   */
+  movePlayerTo(position) {
+    if (this.scene) {
+      const playerObj = this.scene.getObjectByName("player");
+      if (playerObj) {
+        playerObj.position.set(position.x, position.y, position.z);
+        this.player.position = { x: position.x, y: position.y, position: position.z };
+        return true;
+      }
+    }
+    return false;
+  }
+  
   _convertSceneToGraph(scene) {
     const graph = {
       name: scene.name || "Scene",
@@ -353,5 +480,40 @@ export class GameState {
     });
     
     return graph;
+  }
+  
+  /**
+   * Crée un marqueur visuel pour indiquer un emplacement important
+   * @param {THREE.Vector3} position - Position du marqueur
+   * @param {string} type - Type de marqueur ('quest', 'item', 'danger', etc.)
+   * @returns {THREE.Object3D} - L'objet marqueur créé
+   */
+  createMarker(position, type = 'general') {
+    if (!this.scene) return null;
+    
+    // Déterminer la couleur selon le type
+    let color;
+    switch (type) {
+      case 'quest': color = 0xffff00; break;    // Jaune
+      case 'item': color = 0x00ff00; break;     // Vert
+      case 'danger': color = 0xff0000; break;   // Rouge
+      case 'npc': color = 0x00ffff; break;      // Cyan
+      default: color = 0xffffff; break;         // Blanc
+    }
+    
+    // Créer un sprite avec une texture de cercle
+    const markerMaterial = new THREE.SpriteMaterial({ 
+      color: color,
+      sizeAttenuation: false
+    });
+    
+    const marker = new THREE.Sprite(markerMaterial);
+    marker.position.copy(position);
+    marker.position.y += 2; // Positionner au-dessus des objets
+    marker.scale.set(0.5, 0.5, 1);
+    marker.name = `marker_${type}_${Date.now()}`;
+    
+    this.scene.add(marker);
+    return marker;
   }
 }
