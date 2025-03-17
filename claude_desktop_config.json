@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "game-assistant": {
+      "command": "node",
+      "args": [
+        "/chemin/absolu/vers/game-assistant-mcp/src/server.js"
+      ]
+    }
+  }
+}
