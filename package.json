@@ -26,5 +26,11 @@
   "devDependencies": {
     "jest": "^29.7.0",
     "nodemon": "^3.0.1"
+  },
+  "scripts": {
+  "start": "node src/server.js",
+  "test-game": "node test-game.js",
+  "test-full": "concurrently \"npm run test-game\" \"npm run start\"",
+  "dev": "nodemon src/server.js"
   }
 }
