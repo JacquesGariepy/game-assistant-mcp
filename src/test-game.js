@@ -1,6 +1,6 @@
 // test-game.js
 import * as THREE from 'three';
-import { GameState } from './src/game-connector.js';
+import { GameState } from './server/game-connector.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // Mise en place de la scène de test

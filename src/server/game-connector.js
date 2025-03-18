@@ -406,13 +406,55 @@ export class GameState {
    * Déplace le joueur vers une position
    * @param {object} position - {x, y, z}
    */
-  movePlayerTo(position) {
+  async movePlayerTo(x, y, z) {
+    console.error(`Déplacement du joueur vers (${x}, ${y}, ${z})`);
+    
     if (this.scene) {
-      const playerObj = this.scene.getObjectByName("player");
-      if (playerObj) {
-        playerObj.position.set(position.x, position.y, position.z);
-        this.player.position = { x: position.x, y: position.y, position: position.z };
-        return true;
+      const playerObject = this.scene.getObjectByName("player");
+      if (playerObject) {
+        try {
+          // Créer une copie temporaire du vecteur position actuel
+          const newPosition = new THREE.Vector3(x, y, z);
+          
+          // Méthode 1: Utiliser copy au lieu de set
+          playerObject.position.copy(newPosition);
+          
+          // Méthode 2 (alternative): Modifier les composants individuellement
+          // playerObject.position.x = x;
+          // playerObject.position.y = y;
+          // playerObject.position.z = z;
+          
+          // Mettre à jour les données du joueur
+          this.player.position = { x, y, z };
+          return true;
+        } catch (error) {
+          console.error(`Erreur lors du déplacement: ${error.message}`);
+          // Tentative de solution alternative si la méthode principale échoue
+          try {
+            // Créer un nouveau groupe et y transférer le contenu
+            const newPlayerGroup = new THREE.Group();
+            newPlayerGroup.position.set(x, y, z);
+            newPlayerGroup.name = playerObject.name;
+            newPlayerGroup.userData = playerObject.userData;
+            
+            // Transférer les enfants
+            while(playerObject.children.length > 0) {
+              const child = playerObject.children[0];
+              newPlayerGroup.add(child);
+            }
+            
+            // Remplacer l'ancien groupe dans la scène
+            this.scene.remove(playerObject);
+            this.scene.add(newPlayerGroup);
+            
+            // Mettre à jour les données du joueur
+            this.player.position = { x, y, z };
+            return true;
+          } catch (err) {
+            console.error(`Tentative alternative échouée: ${err.message}`);
+            return false;
+          }
+        }
       }
     }
     return false;
@@ -516,4 +558,174 @@ export class GameState {
     this.scene.add(marker);
     return marker;
   }
+  // Méthodes d'interaction avec le joueur dans GameState
+
+  // Déplacer le joueur vers une position
+  async movePlayerTo(x, y, z) {
+    console.error(`Déplacement du joueur vers (${x}, ${y}, ${z})`);
+    
+    if (this.scene) {
+      const playerObject = this.scene.getObjectByName("player");
+      if (playerObject) {
+        // Utiliser set() au lieu d'une assignation directe
+        playerObject.position.set(x, y, z);
+        this.player.position = { x, y, z };
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Faire interagir le joueur avec un objet
+  async interactWithObject(objectId) {
+    console.error(`Interaction avec l'objet ${objectId}`);
+    
+    if (this.scene) {
+      const object = this._findObjectById(this.scene, objectId);
+      if (object && object.userData && object.userData.interactive) {
+        // Vérifier la distance entre le joueur et l'objet
+        const playerObj = this.scene.getObjectByName("player");
+        if (playerObj) {
+          const distance = this._calculateDistance(playerObj.position, object.position);
+          
+          if (distance > 5) {
+            return {
+              success: false,
+              message: "Trop loin pour interagir. Rapprochez-vous d'abord."
+            };
+          }
+          
+          // Effectuer l'action selon le type d'objet
+          switch (object.userData.type) {
+            case "container":
+              if (object.userData.locked) {
+                return {
+                  success: false,
+                  message: "Ce conteneur est verrouillé. Vous avez besoin d'une clé."
+                };
+              }
+              return {
+                success: true,
+                message: `Vous avez ouvert ${object.name} et trouvé: ${object.userData.loot.join(", ")}`
+              };
+              
+            case "npc":
+              return {
+                success: true,
+                message: `${object.name} dit: "${object.userData.dialogue}"`
+              };
+              
+            case "building":
+              return {
+                success: true,
+                message: `Vous entrez dans ${object.name}.`
+              };
+              
+            default:
+              return {
+                success: true,
+                message: `Vous interagissez avec ${object.name}.`
+              };
+          }
+        }
+      }
+    }
+    
+    return {
+      success: false,
+      message: `Objet ${objectId} non trouvé ou non interactif.`
+    };
+  }
+
+  // Exécuter une action du joueur
+  async performAction(actionType, params = {}) {
+    console.error(`Exécution de l'action ${actionType}`);
+    
+    const actions = {
+      "jump": () => {
+        return {
+          success: true,
+          message: "Le joueur saute en l'air."
+        };
+      },
+      "attack": () => {
+        const targetId = params.targetId;
+        if (!targetId) {
+          return {
+            success: false,
+            message: "Aucune cible spécifiée pour l'attaque."
+          };
+        }
+        
+        const target = this._findObjectById(this.scene, targetId);
+        if (!target) {
+          return {
+            success: false,
+            message: `Cible ${targetId} non trouvée.`
+          };
+        }
+        
+        // Logique d'attaque
+        return {
+          success: true,
+          message: `Le joueur attaque ${target.name}.`
+        };
+      },
+      "use_item": () => {
+        const itemId = params.itemId;
+        if (!itemId) {
+          return {
+            success: false,
+            message: "Aucun objet spécifié."
+          };
+        }
+        
+        const item = this.player.inventory.find(i => i.id === itemId);
+        if (!item) {
+          return {
+            success: false,
+            message: `Objet ${itemId} non trouvé dans l'inventaire.`
+          };
+        }
+        
+        return {
+          success: true,
+          message: `Le joueur utilise ${item.name}.`
+        };
+      }
+    };
+    
+    if (actionType in actions) {
+      return actions[actionType]();
+    }
+    
+    return {
+      success: false,
+      message: `Action ${actionType} non reconnue.`
+    };
+  }
+
+  // Méthodes auxiliaires
+  _findObjectById(node, id) {
+    if (node.uuid === id || node.name === id) {
+      return node;
+    }
+    
+    if (node.children) {
+      for (const child of node.children) {
+        const found = this._findObjectById(child, id);
+        if (found) return found;
+      }
+    }
+    
+    return null;
+  }
+
+  _calculateDistance(pos1, pos2) {
+    const dx = pos1.x - pos2.x;
+    const dy = pos1.y - pos2.y;
+    const dz = pos1.z - pos2.z;
+    return Math.sqrt(dx*dx + dy*dy + dz*dz);
+  }
+
 }

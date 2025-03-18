@@ -3,7 +3,7 @@
     "game-assistant": {
       "command": "node",
       "args": [
-        "/chemin/absolu/vers/game-assistant-mcp/src/server.js"
+        "C:/Users/admlocal/Documents/POC/game-assistant-mcp/src/server/server.js"
       ]
     }
   }

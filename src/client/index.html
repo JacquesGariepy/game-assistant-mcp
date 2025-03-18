@@ -1,0 +1,560 @@
+<!-- client/index.html -->
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Assistant MCP - 3D Viewer</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+        #game-canvas { width: 100%; height: 100%; display: block; }
+        #controls { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; padding: 10px; border-radius: 5px; }
+        .control-panel { margin-bottom: 20px; }
+        button { margin: 5px 0; padding: 8px 12px; background: #4285f4; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #3b78e7; }
+        #player-coords { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.7); color: white; padding: 5px 10px; border-radius: 3px; font-family: monospace; }
+        #object-info { background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 0.9em; }
+        #sync-indicator { position: absolute; top: 10px; left: 10px; color: white; background: rgba(0,0,0,0.7); padding: 5px; border-radius: 3px; }
+        #keyboard-guide { position: absolute; left: 10px; top: 50px; background: rgba(0,0,0,0.7); color: white; padding: 10px; border-radius: 5px; z-index: 1000; }
+    </style>
+</head>
+<body>
+    <canvas id="game-canvas"></canvas>
+    
+    <div id="controls">
+        <div class="control-panel">
+            <h2>Contrôles du jeu</h2>
+            <button id="toggle-wireframe">Afficher/Cacher Wireframe</button>
+            <button id="focus-temple">Focus Temple</button>
+            <button id="focus-player">Focus Joueur</button>
+            <button id="test-move-player">Test: Déplacer vers (0,0,5)</button>
+            <button id="reset-player">Réinitialiser position</button>
+            <button id="toggle-camera-follow">Activer suivi caméra</button>
+        </div>
+        
+        <div class="info-panel">
+            <h2>Informations</h2>
+            <div id="object-info">Cliquez sur un objet pour voir ses informations</div>
+        </div>
+    </div>
+    
+    <div id="player-coords">Joueur: x=0.00, y=0.00, z=0.00</div>
+    <div id="sync-indicator">État: Synchronisé</div>
+    
+    <div id="keyboard-guide">
+        <h3>Contrôles clavier</h3>
+        <p>Z/↑: Avancer</p>
+        <p>S/↓: Reculer</p>
+        <p>Q/←: Gauche</p>
+        <p>D/→: Droite</p>
+        <p>Espace: Sauter</p>
+        <p>Shift: Accélérer</p>
+    </div>
+    
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
+      }
+    }
+    </script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        
+        // Variables globales
+        let scene, camera, renderer, controls, player;
+        let playerLastPosition = { x: 0, y: 0, z: 0 };
+        let forceSync = false;
+        let cameraFollowsPlayer = false;
+        const keysPressed = {};
+        const moveSpeed = 0.2; // Vitesse de déplacement par frame
+        
+        // Initialisation
+        function init() {
+            // Créer la scène
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb); // Bleu ciel
+            
+            // Créer la caméra
+            camera = new THREE.PerspectiveCamera(
+                75, window.innerWidth / window.innerHeight, 0.1, 1000
+            );
+            camera.position.set(10, 10, 10);
+            
+            // Créer le renderer
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('game-canvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            
+            // Contrôles de caméra
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // Lumières
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            // Construire la scène
+            createScene();
+            
+            // Gestion du redimensionnement
+            window.addEventListener('resize', onWindowResize);
+            
+            // Gestion des clics
+            renderer.domElement.addEventListener('click', onMouseClick);
+            
+            // Setup contrôles clavier
+            setupKeyboardControls();
+            
+            // Animation loop
+            animate();
+            
+            // Initialiser les contrôles UI
+            initUI();
+            
+            // Socket d'écoute pour les messages MCP
+            setupMessageListener();
+            
+            // Auto-sync check
+            setInterval(checkPlayerPosition, 100);
+        }
+        
+        function createScene() {
+            // Sol
+            const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x228833 });
+            const ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(100, 100),
+                groundMaterial
+            );
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -0.5;
+            ground.receiveShadow = true;
+            ground.name = "ground";
+            scene.add(ground);
+            
+            // Joueur
+            player = new THREE.Group();
+            player.name = "player";
+            
+            const playerBody = new THREE.Mesh(
+                new THREE.BoxGeometry(1, 2, 1),
+                new THREE.MeshStandardMaterial({ color: 0x1155ff })
+            );
+            playerBody.castShadow = true;
+            player.add(playerBody);
+            
+            player.position.set(0, 0, 0); // Position initiale
+            scene.add(player);
+            
+            // IMPORTANT: Ajouter une fonction personnalisée pour déplacer le joueur
+            player.moveToPosition = function(x, y, z) {
+                this.position.set(x, y, z);
+                updatePlayerCoords();
+                if (cameraFollowsPlayer) {
+                    centerCameraOnPlayer();
+                }
+                return this;
+            };
+            
+            // Exposer globalement pour un accès facile à partir du MCP
+            window.player = player;
+            
+            // PNJ
+            for (let i = 0; i < 3; i++) {
+                const npc = new THREE.Group();
+                npc.name = `npc_${i}`;
+                npc.position.set(5 * (i - 1), 0, 5);
+                
+                const npcBody = new THREE.Mesh(
+                    new THREE.BoxGeometry(1, 2, 1),
+                    new THREE.MeshStandardMaterial({ color: 0xCC5500 })
+                );
+                npc.add(npcBody);
+                scene.add(npc);
+            }
+            
+            // Coffre
+            const chest = new THREE.Mesh(
+                new THREE.BoxGeometry(1, 0.8, 1.5),
+                new THREE.MeshStandardMaterial({ color: 0x885511 })
+            );
+            chest.name = "treasureChest";
+            chest.position.set(3, 0, -2);
+            scene.add(chest);
+            
+            // Temple
+            const temple = new THREE.Group();
+            temple.name = "ancientTemple";
+            temple.position.set(-10, 0, -10);
+            
+            const templeBase = new THREE.Mesh(
+                new THREE.BoxGeometry(8, 1, 8),
+                new THREE.MeshStandardMaterial({ color: 0x999999 })
+            );
+            templeBase.position.y = -0.25;
+            temple.add(templeBase);
+            
+            const templeRoof = new THREE.Mesh(
+                new THREE.ConeGeometry(6, 5, 4),
+                new THREE.MeshStandardMaterial({ color: 0x777777 })
+            );
+            templeRoof.position.y = 3;
+            temple.add(templeRoof);
+            
+            scene.add(temple);
+        }
+        
+        function setupKeyboardControls() {
+            // Suivi des touches pressées
+            window.addEventListener('keydown', (event) => {
+                keysPressed[event.key] = true;
+            });
+            
+            window.addEventListener('keyup', (event) => {
+                keysPressed[event.key] = false;
+            });
+        }
+        
+        function updatePlayerMovement() {
+            if (!player) return false;
+            
+            // Calculer la direction par rapport à la caméra
+            const cameraDirection = new THREE.Vector3();
+            camera.getWorldDirection(cameraDirection);
+            
+            // Vecteurs de direction
+            const forward = new THREE.Vector3(cameraDirection.x, 0, cameraDirection.z).normalize();
+            const right = new THREE.Vector3(forward.z, 0, -forward.x);
+            
+            // Facteur de vitesse (shift pour courir)
+            const speedFactor = keysPressed['Shift'] ? 2 : 1;
+            
+            // Déplacement actuel
+            let moved = false;
+            const movement = new THREE.Vector3(0, 0, 0);
+            
+            // Avancer (Z, w ou flèche haut)
+            if (keysPressed['z'] || keysPressed['Z'] || keysPressed['w'] || keysPressed['W'] || keysPressed['ArrowUp']) {
+                movement.add(forward.clone().multiplyScalar(moveSpeed * speedFactor));
+                moved = true;
+            }
+            
+            // Reculer (S ou flèche bas)
+            if (keysPressed['s'] || keysPressed['S'] || keysPressed['ArrowDown']) {
+                movement.add(forward.clone().multiplyScalar(-moveSpeed * speedFactor));
+                moved = true;
+            }
+            
+            // Gauche (Q, a ou flèche gauche)
+            if (keysPressed['q'] || keysPressed['Q'] || keysPressed['a'] || keysPressed['A'] || keysPressed['ArrowLeft']) {
+                movement.add(right.clone().multiplyScalar(-moveSpeed * speedFactor));
+                moved = true;
+            }
+            
+            // Droite (D ou flèche droite)
+            if (keysPressed['d'] || keysPressed['D'] || keysPressed['ArrowRight']) {
+                movement.add(right.clone().multiplyScalar(moveSpeed * speedFactor));
+                moved = true;
+            }
+            
+            // Sauter (Espace)
+            if (keysPressed[' ']) {
+                // Simulation simple de saut
+                if (player.position.y <= 0.1) { // Si au sol ou presque
+                    movement.y = 0.3; // Impulsion de saut
+                }
+                moved = true;
+            }
+            
+            // Appliquer la gravité
+            if (player.position.y > 0) {
+                movement.y -= 0.01; // Force de gravité
+                moved = true;
+            } else if (player.position.y < 0) {
+                // Empêcher de descendre sous le sol
+                player.position.y = 0;
+                moved = true;
+            }
+            
+            // Appliquer le mouvement s'il y en a un
+            if (moved) {
+                player.position.add(movement);
+                updatePlayerCoords();
+                
+                // Mettre à jour dans localStorage pour synchronisation
+                localStorage.setItem('mcp_player_position', JSON.stringify({
+                    x: player.position.x,
+                    y: player.position.y,
+                    z: player.position.z
+                }));
+                
+                // Synchroniser la dernière position connue
+                playerLastPosition = {
+                    x: player.position.x,
+                    y: player.position.y,
+                    z: player.position.z
+                };
+                
+                // Suivre avec la caméra si nécessaire
+                if (cameraFollowsPlayer) {
+                    centerCameraOnPlayer(true);
+                }
+            }
+            
+            return moved;
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Mettre à jour le mouvement du joueur basé sur les touches
+            updatePlayerMovement();
+            
+            // Mettre à jour les contrôles de la caméra
+            controls.update();
+            
+            // Rendu
+            renderer.render(scene, camera);
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        function onMouseClick(event) {
+            const raycaster = new THREE.Raycaster();
+            const mouse = new THREE.Vector2();
+            
+            // Calculer la position de la souris
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            // Lancer le rayon
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(scene.children, true);
+            
+            if (intersects.length > 0) {
+                let object = intersects[0].object;
+                
+                // Remonter à l'objet parent si nécessaire
+                while (object.parent && object.parent !== scene) {
+                    object = object.parent;
+                }
+                
+                // Afficher les infos
+                showObjectInfo(object);
+            }
+        }
+        
+        function showObjectInfo(object) {
+            const infoDiv = document.getElementById('object-info');
+            let info = `<h3>${object.name}</h3>`;
+            
+            info += `<p>Position: x=${object.position.x.toFixed(2)}, y=${object.position.y.toFixed(2)}, z=${object.position.z.toFixed(2)}</p>`;
+            
+            infoDiv.innerHTML = info;
+        }
+        
+        function centerCameraOnPlayer(smooth = true) {
+            if (!player) return;
+            
+            const playerPos = player.position.clone();
+            
+            if (smooth) {
+                const currentTarget = controls.target.clone();
+                const currentPos = camera.position.clone();
+                
+                const offset = new THREE.Vector3().subVectors(currentPos, currentTarget);
+                const distance = offset.length();
+                
+                controls.target.copy(playerPos);
+                
+                const newPos = playerPos.clone().add(offset.normalize().multiplyScalar(distance));
+                camera.position.copy(newPos);
+            } else {
+                controls.target.copy(playerPos);
+                
+                const offset = new THREE.Vector3(5, 5, 5);
+                camera.position.copy(playerPos).add(offset);
+            }
+            
+            controls.update();
+        }
+        
+        function toggleWireframe() {
+            scene.traverse((object) => {
+                if (object.isMesh) {
+                    object.material.wireframe = !object.material.wireframe;
+                }
+            });
+        }
+        
+        function focusObject(objectName) {
+            const object = scene.getObjectByName(objectName);
+            if (object) {
+                const box = new THREE.Box3().setFromObject(object);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                
+                const distance = Math.max(size.x, size.y, size.z) * 2.5;
+                const direction = new THREE.Vector3(1, 1, 1).normalize();
+                
+                controls.target.copy(center);
+                camera.position.copy(center).add(direction.multiplyScalar(distance));
+                controls.update();
+            }
+        }
+        
+        function updatePlayerCoords() {
+            const coordsDiv = document.getElementById('player-coords');
+            coordsDiv.textContent = `Joueur: x=${player.position.x.toFixed(2)}, y=${player.position.y.toFixed(2)}, z=${player.position.z.toFixed(2)}`;
+        }
+        
+        function setupMessageListener() {
+            // TECHNIQUE DE DERNIÈRE CHANCE: Intercepter les logs de la console
+            const originalConsoleError = console.error;
+            console.error = function() {
+                const args = Array.from(arguments);
+                
+                if (args.length > 0 && typeof args[0] === 'string') {
+                    // Détecter les messages spéciaux
+                    if (args[0].includes('move_player') && args[0].includes('Joueur déplacé avec succès')) {
+                        const message = args[0];
+                        
+                        // Extraire les coordonnées avec regex (recherche de formats comme (0, 0, 5))
+                        const coordRegex = /\((-?\d+\.?\d*),\s*(-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)/;
+                        const match = message.match(coordRegex);
+                        
+                        if (match && match.length === 4) {
+                            const x = parseFloat(match[1]);
+                            const y = parseFloat(match[2]);
+                            const z = parseFloat(match[3]);
+                            
+                            console.log(`Détecté déplacement vers: (${x}, ${y}, ${z})`);
+                            
+                            // Force la synchronisation pour le prochain check
+                            forceSync = true;
+                            playerLastPosition = { x, y, z };
+                        }
+                    }
+                    
+                    // Vérifier les commandes directes
+                    if (args[0].startsWith('PLAYER_MOVE_COMMAND:')) {
+                        const command = args[0].substring('PLAYER_MOVE_COMMAND:'.length);
+                        try {
+                            eval(command);
+                            showSyncStatus("Commande exécutée", "lime");
+                        } catch (e) {
+                            console.warn("Erreur d'exécution:", e);
+                        }
+                    }
+                }
+                
+                // Appel original
+                return originalConsoleError.apply(console, args);
+            };
+            
+            // Établir une connexion globals/session storage
+            window.addEventListener('storage', function(e) {
+                if (e.key === 'mcp_player_position') {
+                    try {
+                        const position = JSON.parse(e.newValue);
+                        if (position && position.x !== undefined) {
+                            if (player) {
+                                player.moveToPosition(position.x, position.y, position.z);
+                                showSyncStatus("Mis à jour via storage", "green");
+                            }
+                        }
+                    } catch (error) {
+                        console.warn("Erreur de parsing:", error);
+                    }
+                }
+            });
+        }
+        
+        // Vérification périodique si la position diffère de celle attendue
+        function checkPlayerPosition() {
+            if (!player) return;
+            
+            // Si forceSync est actif ou les positions ne correspondent pas
+            if (forceSync || 
+                Math.abs(player.position.x - playerLastPosition.x) > 0.01 ||
+                Math.abs(player.position.y - playerLastPosition.y) > 0.01 ||
+                Math.abs(player.position.z - playerLastPosition.z) > 0.01) {
+                
+                // Actualiser la position
+                player.position.set(playerLastPosition.x, playerLastPosition.y, playerLastPosition.z);
+                updatePlayerCoords();
+                
+                // Mettre à jour les vues
+                showSyncStatus("Synchronisé forcé", "orange");
+                
+                // Réinitialiser le flag
+                forceSync = false;
+            }
+        }
+        
+        function showSyncStatus(message, color = "white") {
+            const indicator = document.getElementById('sync-indicator');
+            indicator.textContent = `État: ${message}`;
+            indicator.style.color = color;
+            
+            // Réinitialiser après un délai
+            setTimeout(() => {
+                indicator.textContent = "État: Synchronisé";
+                indicator.style.color = "white";
+            }, 3000);
+        }
+        
+        // Initialisation des contrôles UI
+        function initUI() {
+            document.getElementById('toggle-wireframe').addEventListener('click', toggleWireframe);
+            document.getElementById('focus-temple').addEventListener('click', () => focusObject('ancientTemple'));
+            document.getElementById('focus-player').addEventListener('click', () => focusObject('player'));
+            
+            document.getElementById('test-move-player').addEventListener('click', () => {
+                if (player) {
+                    player.moveToPosition(0, 0, 5);
+                    // Stocker également dans localStorage pour que le MCP puisse y accéder
+                    localStorage.setItem('mcp_player_position', JSON.stringify({ x: 0, y: 0, z: 5 }));
+                    showSyncStatus("Déplacé manuellement", "cyan");
+                }
+            });
+            
+            document.getElementById('reset-player').addEventListener('click', () => {
+                if (player) {
+                    player.moveToPosition(0, 0, 0);
+                    showSyncStatus("Position réinitialisée", "yellow");
+                }
+            });
+            
+            document.getElementById('toggle-camera-follow').addEventListener('click', () => {
+                cameraFollowsPlayer = !cameraFollowsPlayer;
+                document.getElementById('toggle-camera-follow').textContent = 
+                    cameraFollowsPlayer ? 'Désactiver suivi caméra' : 'Activer suivi caméra';
+                
+                if (cameraFollowsPlayer) {
+                    centerCameraOnPlayer();
+                }
+                
+                showSyncStatus(`Suivi caméra ${cameraFollowsPlayer ? 'activé' : 'désactivé'}`, "cyan");
+            });
+        }
+        
+        // Démarrer l'application
+        init();
+    </script>
+</body>
+</html>

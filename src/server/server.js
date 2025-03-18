@@ -352,6 +352,155 @@ server.tool(
   }
 );
 
+server.tool(
+  "move_player",
+  "Déplace le joueur vers une position spécifique dans le monde",
+  {
+    x: z.number().describe("Coordonnée X"),
+    y: z.number().describe("Coordonnée Y"),
+    z: z.number().describe("Coordonnée Z"),
+    reason: z.string().optional().describe("Raison du déplacement"),
+  },
+  async ({ x, y, z, reason }) => {
+    try {
+      // Obtenir l'objet joueur directement
+      const playerObject = gameState.scene.getObjectByName("player");
+      let result = false;
+      
+      if (playerObject) {
+        try {
+          // Déplacer le joueur dans le game state
+          playerObject.position.set(x, y, z);
+          gameState.player.position = { x, y, z };
+          result = true;
+          
+          // SOLUTION MULTI-APPROCHE: Utiliser toutes les méthodes possibles pour communiquer avec l'interface
+          
+          // 1. Méthode localStorage (la plus fiable)
+          console.error(`PLAYER_MOVE_COMMAND: localStorage.setItem('mcp_player_position', '${JSON.stringify({x, y, z})}');`);
+          
+          // 2. Méthode window.player directe
+          console.error(`PLAYER_MOVE_COMMAND: if (window.player && window.player.moveToPosition) window.player.moveToPosition(${x}, ${y}, ${z});`);
+          
+          // 3. Utiliser l'objet GameViewer global
+          console.error(`PLAYER_MOVE_COMMAND: if (window.gameViewer && window.gameViewer.scene) {
+            const player = window.gameViewer.scene.getObjectByName('player');
+            if (player) {
+              player.position.set(${x}, ${y}, ${z});
+              window.gameViewer.centerCameraOnPlayer && window.gameViewer.centerCameraOnPlayer(true);
+            }
+          }`);
+          
+          // 4. Dispatch un événement personnalisé que l'interface pourrait écouter
+          console.error(`PLAYER_MOVE_COMMAND: window.dispatchEvent(new CustomEvent('mcp-player-move', { detail: { x: ${x}, y: ${y}, z: ${z} } }));`);
+        } catch (error) {
+          console.error(`Erreur lors du déplacement: ${error.message}`);
+          result = false;
+        }
+      }
+      
+      let message = result 
+        ? `Joueur déplacé avec succès vers (${x}, ${y}, ${z}).` 
+        : "Impossible de déplacer le joueur.";
+        
+      if (reason) {
+        message += ` Raison: ${reason}`;
+      }
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: message,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `Erreur lors du déplacement du joueur: ${error.message}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Outil pour interagir avec un objet
+server.tool(
+  "interact_with_object",
+  "Fait interagir le joueur avec un objet dans la scène",
+  {
+    object_id: z.string().describe("ID ou nom de l'objet à interagir"),
+  },
+  async ({ object_id }) => {
+    try {
+      const result = await gameState.interactWithObject(object_id);
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `Erreur lors de l'interaction: ${error.message}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Outil pour exécuter une action du joueur
+server.tool(
+  "perform_action",
+  "Fait exécuter une action spécifique au joueur",
+  {
+    action_type: z.enum(["jump", "attack", "use_item"]).describe("Type d'action à effectuer"),
+    target_id: z.string().optional().describe("ID de la cible (pour les actions qui le requièrent)"),
+    item_id: z.string().optional().describe("ID de l'objet à utiliser (pour l'action use_item)"),
+  },
+  async ({ action_type, target_id, item_id }) => {
+    try {
+      const params = {};
+      if (target_id) params.targetId = target_id;
+      if (item_id) params.itemId = item_id;
+      
+      const result = await gameState.performAction(action_type, params);
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `Erreur lors de l'exécution de l'action: ${error.message}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // ------------------------------------------------
 // Définition des prompts
 // ------------------------------------------------
