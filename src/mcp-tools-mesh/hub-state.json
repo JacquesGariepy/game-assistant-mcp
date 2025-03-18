@@ -3,17 +3,17 @@
     "server": {
       "type": "server",
       "connected": true,
-      "lastSeen": "2025-03-18T15:54:32.158Z"
+      "lastSeen": "2025-03-18T16:21:16.644Z"
     },
     "client-b": {
       "type": "client",
       "connected": true,
-      "lastSeen": "2025-03-18T14:51:05.973Z"
+      "lastSeen": "2025-03-18T16:18:51.383Z"
     },
     "client-a": {
       "type": "client",
       "connected": true,
-      "lastSeen": "2025-03-18T14:51:05.973Z"
+      "lastSeen": "2025-03-18T16:18:51.383Z"
     }
   },
   "tools": {
