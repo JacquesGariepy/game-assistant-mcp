@@ -260,6 +260,14 @@ function setupMessageChannel() {
   // Lire les messages de l'UI
   process.stdin.on('data', (data) => {
     try {
+      // Log de toutes les données brutes reçues
+      console.log(JSON.stringify(createJsonRpcMessage(
+        "raw_input",
+        {
+          data: data.toString()
+        }
+      )));
+      
       const message = JSON.parse(data.toString());
       
       // Log du message reçu pour debug
@@ -270,6 +278,61 @@ function setupMessageChannel() {
           message: message
         }
       )));
+      
+      // Détection et traitement de tout type de message contenant des informations de position
+      if (message.x !== undefined || message.position || message.playerPosition || 
+          (message.params && (message.params.position || message.params.x !== undefined))) {
+            
+        // Extraire la position de n'importe quel format
+        let position;
+        if (message.x !== undefined) {
+          position = {
+            x: message.x,
+            y: message.y !== undefined ? message.y : 0,
+            z: message.z !== undefined ? message.z : 0
+          };
+        } else if (message.position) {
+          position = message.position;
+        } else if (message.playerPosition) {
+          position = message.playerPosition;
+        } else if (message.params) {
+          if (message.params.position) {
+            position = message.params.position;
+          } else if (message.params.x !== undefined) {
+            position = {
+              x: message.params.x,
+              y: message.params.y !== undefined ? message.params.y : 0,
+              z: message.params.z !== undefined ? message.params.z : 0
+            };
+          }
+        }
+        
+        if (position) {
+          console.log(JSON.stringify(createJsonRpcMessage(
+            "position_detected",
+            {
+              source: "message_parser",
+              original_message: message,
+              extracted_position: position
+            }
+          )));
+          
+          // Utiliser la fonction centralisée pour mettre à jour la position
+          updatePlayerPosition(position);
+          
+          // Émission d'un événement artificiel ui:player_position_changed
+          eventBus.emit('ui:player_position_changed', position);
+          
+          // Envoyer une réponse de succès si un ID est présent
+          if (message.id !== null && message.id !== undefined) {
+            process.stdout.write(JSON.stringify(createJsonRpcResponse(
+              message.id,
+              { success: true }
+            )) + '\n');
+          }
+          return;
+        }
+      }
       
       // Cas spécial pour les mises à jour de position - traitement prioritaire
       if (message.method === "update_position" && message.params && message.params.position) {
@@ -414,6 +477,33 @@ server.resource(
       return JSON.stringify(gameState.player.position, null, 2);
     }
     return JSON.stringify({ x: 0, y: 0, z: 0 }, null, 2);
+  }
+);
+
+// Ajout d'une ressource modifiable pour la position du joueur
+server.resource(
+  "set_player_position",
+  "Modifier la position du joueur",
+  async (params) => {
+    try {
+      const position = JSON.parse(params);
+      if (position && (position.x !== undefined || position.y !== undefined || position.z !== undefined)) {
+        // Mise à jour de la position du joueur
+        const result = updatePlayerPosition(position);
+        
+        // Notifier l'UI du déplacement
+        eventBus.emit('server:send_to_ui', {
+          action: 'player_position_updated',
+          position: gameState.player?.position || position,
+          source: 'set_player_position_resource'
+        });
+        
+        return JSON.stringify({ success: true, position: gameState.player?.position }, null, 2);
+      }
+      return JSON.stringify({ error: "Format de position invalide" }, null, 2);
+    } catch (error) {
+      return JSON.stringify({ error: error.message }, null, 2);
+    }
   }
 );
 
@@ -835,4 +925,347 @@ server.tool(
   "perform_action",
   "Fait exécuter une action spécifique au joueur",
   {
-    action_type: z.enum(["jump", "attack
+    action_type: z.enum(["jump", "attack", "use_item"]).describe("Type d'action à effectuer"),
+    target_id: z.string().optional().describe("ID de la cible (pour les actions qui le requièrent)"),
+    item_id: z.string().optional().describe("ID de l'objet à utiliser (pour l'action use_item)"),
+  },
+  async ({ action_type, target_id, item_id }) => {
+    try {
+      const params = {};
+      if (target_id) params.targetId = target_id;
+      if (item_id) params.itemId = item_id;
+      
+      const result = await gameState.performAction(action_type, params);
+      
+      // Notifier l'UI de l'action
+      if (result.success) {
+        eventBus.emit('server:send_to_ui', {
+          action: 'player_action',
+          action_type: action_type,
+          params: params,
+          result: result
+        });
+      }
+      
+      return toolResponseWrapper({
+        content: [
+          {
+            type: "text",
+            text: result.message,
+          },
+        ]
+      });
+    } catch (error) {
+      return toolResponseWrapper({
+        content: [
+          {
+            type: "text",
+            text: `Erreur lors de l'exécution de l'action: ${error.message}`,
+          },
+        ]
+      }, true);
+    }
+  }
+);
+
+// Nouvel outil pour synchroniser l'état du jeu avec l'UI
+server.tool(
+  "sync_game_state",
+  "Synchronise l'état du jeu entre le serveur et l'interface utilisateur",
+  {
+    sync_type: z.enum(["full", "player", "environment", "quests"]).describe("Type de synchronisation à effectuer"),
+  },
+  async ({ sync_type }) => {
+    try {
+      let message = "";
+      
+      switch (sync_type) {
+        case "full":
+          try {
+            // Envoyer toutes les données à l'UI
+            const sceneSummary = await gameState.getSceneObjectsSummary();
+            eventBus.emit('server:send_to_ui', {
+              action: 'sync_full',
+              player: gameState.player,
+              environment: gameState.environment,
+              quests: gameState.quests,
+              scene_objects: sceneSummary || []
+            });
+            message = "Synchronisation complète effectuée avec succès.";
+          } catch (error) {
+            // Fallback pour les méthodes manquantes
+            eventBus.emit('server:send_to_ui', {
+              action: 'sync_full',
+              player: gameState.player,
+              environment: gameState.environment,
+              quests: gameState.quests
+            });
+            message = "Synchronisation partielle effectuée avec succès.";
+          }
+          break;
+          
+        case "player":
+          eventBus.emit('server:send_to_ui', {
+            action: 'sync_player',
+            player: gameState.player
+          });
+          message = "Synchronisation des données du joueur effectuée avec succès.";
+          break;
+          
+        case "environment":
+          eventBus.emit('server:send_to_ui', {
+            action: 'sync_environment',
+            environment: gameState.environment
+          });
+          message = "Synchronisation des données d'environnement effectuée avec succès.";
+          break;
+          
+        case "quests":
+          eventBus.emit('server:send_to_ui', {
+            action: 'sync_quests',
+            quests: gameState.quests
+          });
+          message = "Synchronisation des quêtes effectuée avec succès.";
+          break;
+      }
+      
+      return toolResponseWrapper({
+        content: [
+          {
+            type: "text",
+            text: message
+          },
+        ]
+      });
+    } catch (error) {
+      return toolResponseWrapper({
+        content: [
+          {
+            type: "text",
+            text: `Erreur lors de la synchronisation: ${error.message}`,
+          },
+        ]
+      }, true);
+    }
+  }
+);
+
+// Nouvel outil pour demander les informations de position actuelles du joueur
+server.tool(
+  "get_player_position",
+  "Récupère la position actuelle du joueur dans le monde",
+  {
+    // Pas de paramètres nécessaires
+  },
+  async () => {
+    try {
+      const position = gameState.player?.position || { x: 0, y: 0, z: 0 };
+      
+      return toolResponseWrapper({
+        content: [
+          {
+            type: "text",
+            text: `Position actuelle du joueur: (${position.x}, ${position.y}, ${position.z})`,
+          },
+        ]
+      });
+    } catch (error) {
+      return toolResponseWrapper({
+        content: [
+          {
+            type: "text",
+            text: `Erreur lors de la récupération de la position du joueur: ${error.message}`,
+          },
+        ]
+      }, true);
+    }
+  }
+);
+
+// Outil pour forcer la synchronisation de la position UI/MCP
+server.tool(
+  "force_position_sync",
+  "Force la synchronisation de la position entre l'UI et le serveur MCP",
+  {
+    x: z.number().describe("Coordonnée X"),
+    y: z.number().optional().describe("Coordonnée Y"),
+    z: z.number().optional().describe("Coordonnée Z"),
+  },
+  async ({ x, y, z }) => {
+    try {
+      // Construire la position avec les paramètres fournis
+      const position = {
+        x: x,
+        y: y !== undefined ? y : 0,
+        z: z !== undefined ? z : 0
+      };
+      
+      // Mise à jour de la position
+      const result = updatePlayerPosition(position);
+      
+      // Émission d'un événement artificiel ui:player_position_changed
+      eventBus.emit('ui:player_position_changed', position);
+      
+      // Notifier l'UI pour synchronisation
+      eventBus.emit('server:send_to_ui', {
+        action: 'force_position_sync',
+        position: position
+      });
+      
+      return toolResponseWrapper({
+        content: [
+          {
+            type: "text",
+            text: `Synchronisation forcée de la position : (${x}, ${y || 0}, ${z || 0}). Résultat: ${result ? 'Succès' : 'Échec'}`,
+          },
+        ]
+      });
+    } catch (error) {
+      return toolResponseWrapper({
+        content: [
+          {
+            type: "text",
+            text: `Erreur lors de la synchronisation forcée: ${error.message}`,
+          },
+        ]
+      }, true);
+    }
+  }
+);
+
+// ------------------------------------------------
+// Démarrage du serveur
+// ------------------------------------------------
+
+// Configuration de la vérification périodique de la position
+function setupPositionPolling() {
+  // Intervalle en millisecondes (500ms = 0.5 seconde)
+  const POLLING_INTERVAL = 500;
+  
+  // Variable pour stocker la dernière position connue
+  let lastKnownPosition = null;
+  
+  // Démarrer le polling
+  const intervalId = setInterval(() => {
+    try {
+      // Obtenir la position actuelle
+      const currentPosition = gameState.player?.position;
+      
+      // Si la position est définie et différente de la dernière position connue
+      if (currentPosition && 
+          (!lastKnownPosition || 
+           currentPosition.x !== lastKnownPosition.x || 
+           currentPosition.y !== lastKnownPosition.y || 
+           currentPosition.z !== lastKnownPosition.z)) {
+        
+        // Mettre à jour la dernière position connue
+        lastKnownPosition = { ...currentPosition };
+        
+        // Envoyer une notification de changement de position
+        console.log(JSON.stringify(createJsonRpcMessage(
+          "notify",
+          {
+            event: "position_polling",
+            position: currentPosition,
+            timestamp: new Date().toISOString()
+          }
+        )));
+        
+        // Notifier l'UI du changement de position
+        eventBus.emit('server:send_to_ui', {
+          action: 'position_polling_update',
+          position: currentPosition
+        });
+      }
+    } catch (error) {
+      console.log(JSON.stringify(createJsonRpcMessage(
+        "error",
+        {
+          source: "position_polling",
+          message: error.message
+        }
+      )));
+    }
+  }, POLLING_INTERVAL);
+  
+  // Retourner une fonction pour arrêter le polling si nécessaire
+  return () => clearInterval(intervalId);
+}
+
+// Démarrer le polling à l'initialisation du serveur
+const stopPositionPolling = setupPositionPolling();
+
+async function main() {
+  // Méthode de log modifiée pour utiliser le format JSON-RPC 2.0
+  const logInitialization = () => {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        status: "initializing",
+        message: "Initialisation du serveur Game Assistant MCP"
+      }
+    )));
+  };
+
+  logInitialization();
+  
+  // Initialiser la connexion au jeu
+  try {
+    await gameState.initialize();
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        status: "connected",
+        message: "Connexion au jeu établie avec succès"
+      }
+    )));
+  } catch (error) {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        status: "error",
+        message: `Erreur de connexion: ${error.message}`
+      }
+    )));
+    process.exit(1);
+  }
+  
+  // Démarrer le serveur MCP
+  try {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        status: "running",
+        message: "Game Assistant MCP Server is running"
+      }
+    )));
+  } catch (error) {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        status: "error",
+        message: `Erreur de démarrage du serveur: ${error.message}`
+      }
+    )));
+    process.exit(1);
+  }
+}
+
+main().catch(error => {
+  console.log(JSON.stringify(createJsonRpcMessage(
+    "notify",
+    {
+      status: "fatal_error",
+      message: `Error starting server: ${error.message}`
+    }
+  )));
+  
+  // Arrêter le polling avant de quitter
+  if (typeof stopPositionPolling === 'function') {
+    stopPositionPolling();
+  }
+  
+  process.exit(1);
+});
