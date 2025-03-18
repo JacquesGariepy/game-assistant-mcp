@@ -1,6 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { spawn } from 'child_process';
 
 // Configuration du serveur
 const nodeId = "server";
@@ -15,65 +14,64 @@ const localTools = {
   }
 };
 
-// Vérifier si le hub est en cours d'exécution
-async function checkHubRunning() {
-  // Tentative basique - on pourrait améliorer avec une vérification plus robuste
+// Pour suivre la disponibilité des autres nœuds
+let clientAAvailable = false;
+let clientBAvailable = false;
+
+// Création du client
+const client = new Client({ 
+  name: nodeId, 
+  version: "1.0.0" 
+});
+
+// Déterminer le chemin du hub depuis les arguments en ligne de commande
+const getHubPath = () => {
+  const index = process.argv.findIndex(arg => arg === '--hub-path');
+  if (index !== -1 && index < process.argv.length - 1) {
+    return process.argv[index + 1];
+  }
+  // Valeur par défaut
+  return "./mcp-hub.js";
+};
+
+// Fonction pour envoyer un heartbeat périodique
+async function sendHeartbeat() {
   try {
-    const hubProcess = spawn('ps', ['aux']);
-    return new Promise((resolve) => {
-      let output = '';
-      hubProcess.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-      
-      hubProcess.on('close', () => {
-        const isRunning = output.includes('mcp-hub.js');
-        resolve(isRunning);
-      });
+    const result = await client.callTool({
+      name: "heartbeat",
+      arguments: { id: nodeId }
     });
+    
+    if (result && result.content && result.content[0] && result.content[0].text) {
+      const response = JSON.parse(result.content[0].text);
+      if (response.success) {
+        console.error(`[${nodeId}] Heartbeat envoyé avec succès`);
+      } else {
+        console.error(`[${nodeId}] Erreur lors du heartbeat: ${response.error}`);
+        // Tenter de se réenregistrer
+        await registerNode();
+      }
+    }
   } catch (error) {
-    console.error("Erreur lors de la vérification du hub:", error);
-    return false;
+    console.error(`[${nodeId}] Erreur lors de l'envoi du heartbeat:`, error.message);
+    try {
+      await registerNode();
+    } catch (regError) {
+      console.error(`[${nodeId}] Échec de ré-enregistrement:`, regError.message);
+    }
   }
 }
 
-async function main() {
-  // Création du client
-  const client = new Client({ 
-    name: nodeId, 
-    version: "1.0.0" 
-  });
-
+// Enregistrer le nœud avec le hub
+async function registerNode() {
   try {
-    // Vérifier si le hub est en cours d'exécution
-    const hubRunning = await checkHubRunning();
-    
-    if (!hubRunning) {
-      console.error(`[${nodeId}] ATTENTION: Le hub MCP ne semble pas être en cours d'exécution.`);
-      console.error(`[${nodeId}] Démarrez d'abord le hub avec: node mcp-hub.js`);
-    }
-    
-    // Créer le transport pour se connecter au hub
-    // Important: on se connecte à une instance externe du hub
-    const transport = new StdioClientTransport({
-      command: "node",
-      args: ["mcp-hub.js"]
-    });
-    
-    // Connexion au hub
-    console.error(`[${nodeId}] Tentative de connexion au hub...`);
-    await client.connect(transport);
-    console.error(`[${nodeId}] Connecté au hub`);
-    
-    // S'enregistrer en tant que nœud
     console.error(`[${nodeId}] Enregistrement du nœud...`);
-    await client.callTool({
+    const result = await client.callTool({
       name: "register-node",
       arguments: { id: nodeId, type: nodeType }
     });
     
-    // Enregistrer les outils locaux
-    console.error(`[${nodeId}] Enregistrement des outils...`);
+    // Enregistrer les outils
     for (const [name, tool] of Object.entries(localTools)) {
       await client.callTool({
         name: "register-tool",
@@ -83,53 +81,190 @@ async function main() {
           description: tool.description
         }
       });
+      console.error(`[${nodeId}] Outil enregistré: ${name}`);
     }
     
-    // Lister tous les outils disponibles
-    console.error(`[${nodeId}] Demande de la liste des outils...`);
+    return true;
+  } catch (error) {
+    console.error(`[${nodeId}] Erreur lors de l'enregistrement:`, error.message);
+    return false;
+  }
+}
+
+// Fonction pour exécuter un outil local
+function executeLocalTool(toolName, args) {
+  const tool = localTools[toolName];
+  if (!tool) {
+    return `Outil ${toolName} non trouvé sur ${nodeId}`;
+  }
+  
+  try {
+    return tool.execute(args);
+  } catch (error) {
+    console.error(`[${nodeId}] Erreur d'exécution de l'outil ${toolName}:`, error.message);
+    return `Erreur: ${error.message}`;
+  }
+}
+
+// Vérifier périodiquement les outils disponibles et interagir avec eux
+async function checkToolsAndInteract() {
+  try {
     const toolsResponse = await client.callTool({ 
       name: "list-tools", 
       arguments: {} 
     });
+    
+    if (!toolsResponse || !toolsResponse.content || !toolsResponse.content[0] || !toolsResponse.content[0].text) {
+      console.error(`[${nodeId}] Réponse de liste d'outils invalide`);
+      return;
+    }
+    
     const tools = JSON.parse(toolsResponse.content[0].text);
-    console.error(`[${nodeId}] Outils disponibles:`, tools);
+    const nodeIds = [...new Set(tools.map(t => t.nodeId))];
+    console.error(`[${nodeId}] Nœuds actifs: ${nodeIds.join(', ')} (${tools.length} outils au total)`);
     
-    // Attendre un moment avant d'essayer de communiquer avec d'autres nœuds
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Appeler un outil de Client A
-    console.error(`[${nodeId}] Appel de client-a.tool1...`);
-    const tool1Result = await client.callTool({
-      name: "call-remote-tool",
-      arguments: {
-        fromNode: nodeId,
-        toolId: "client-a.tool1",
-        args: { param: "valeur depuis serveur" }
+    // Vérifier si client-a est disponible
+    const clientATools = tools.filter(t => t.nodeId === "client-a");
+    if (clientATools.length > 0 && !clientAAvailable) {
+      clientAAvailable = true;
+      console.error(`[${nodeId}] Le client A est maintenant disponible avec ${clientATools.length} outil(s)`);
+      
+      // Tester les outils de client-a
+      for (const tool of clientATools) {
+        try {
+          console.error(`[${nodeId}] Test de l'outil ${tool.id}...`);
+          const result = await client.callTool({
+            name: "call-remote-tool",
+            arguments: {
+              fromNode: nodeId,
+              toolId: tool.id,
+              args: { param: "détection automatique", from: nodeId }
+            }
+          });
+          console.error(`[${nodeId}] Résultat de ${tool.id}:`, result.content[0].text);
+        } catch (error) {
+          console.error(`[${nodeId}] Erreur lors de l'appel de ${tool.id}:`, error.message);
+        }
       }
-    });
-    console.error(`[${nodeId}] Résultat:`, tool1Result.content[0].text);
+    } else if (clientATools.length === 0 && clientAAvailable) {
+      clientAAvailable = false;
+      console.error(`[${nodeId}] Le client A n'est plus disponible`);
+    }
     
-    // Appeler un outil de Client B
-    console.error(`[${nodeId}] Appel de client-b.tool3...`);
-    const tool3Result = await client.callTool({
-      name: "call-remote-tool",
-      arguments: {
-        fromNode: nodeId,
-        toolId: "client-b.tool3",
-        args: { param: "valeur depuis serveur" }
+    // Vérifier si client-b est disponible
+    const clientBTools = tools.filter(t => t.nodeId === "client-b");
+    if (clientBTools.length > 0 && !clientBAvailable) {
+      clientBAvailable = true;
+      console.error(`[${nodeId}] Le client B est maintenant disponible avec ${clientBTools.length} outil(s)`);
+      
+      // Tester les outils de client-b
+      for (const tool of clientBTools) {
+        try {
+          console.error(`[${nodeId}] Test de l'outil ${tool.id}...`);
+          const result = await client.callTool({
+            name: "call-remote-tool",
+            arguments: {
+              fromNode: nodeId,
+              toolId: tool.id,
+              args: { param: "détection automatique", from: nodeId }
+            }
+          });
+          console.error(`[${nodeId}] Résultat de ${tool.id}:`, result.content[0].text);
+        } catch (error) {
+          console.error(`[${nodeId}] Erreur lors de l'appel de ${tool.id}:`, error.message);
+        }
       }
-    });
-    console.error(`[${nodeId}] Résultat:`, tool3Result.content[0].text);
+    } else if (clientBTools.length === 0 && clientBAvailable) {
+      clientBAvailable = false;
+      console.error(`[${nodeId}] Le client B n'est plus disponible`);
+    }
     
-    // Boucle de réception (simulation)
+  } catch (error) {
+    console.error(`[${nodeId}] Erreur lors de la vérification des outils:`, error.message);
+  }
+}
+
+async function main() {
+  try {
+    // Récupération du chemin du hub
+    const hubPath = getHubPath();
+    console.error(`[${nodeId}] Utilisation du hub: ${hubPath}`);
+    
+    // Création du transport avec le hub spécifié
+    const transport = new StdioClientTransport({
+      command: "node",
+      args: [hubPath]
+    });
+    
+    // Connexion au hub
+    console.error(`[${nodeId}] Tentative de connexion au hub...`);
+    await client.connect(transport);
+    console.error(`[${nodeId}] Connecté au hub`);
+    
+    // Enregistrer le nœud et ses outils
+    await registerNode();
+    
+    // Configurer le heartbeat périodique
+    const heartbeatInterval = setInterval(sendHeartbeat, 5000); // Toutes les 5 secondes
+    
+    // Configurer la vérification des outils
+    const toolCheckInterval = setInterval(checkToolsAndInteract, 10000); // Toutes les 10 secondes
+    
+    // Faire une première vérification immédiate
+    await checkToolsAndInteract();
+    
+    // Test manuel d'appel d'outils
+    setTimeout(async () => {
+      console.error(`\n[${nodeId}] Tests manuels d'appels d'outils:`);
+      
+      // Essayer d'appeler client-a.tool1
+      try {
+        console.error(`[${nodeId}] Appel manuel de client-a.tool1...`);
+        const tool1Result = await client.callTool({
+          name: "call-remote-tool",
+          arguments: {
+            fromNode: nodeId,
+            toolId: "client-a.tool1",
+            args: { param: "appel manuel", from: nodeId }
+          }
+        });
+        console.error(`[${nodeId}] Résultat:`, tool1Result.content[0].text);
+      } catch (error) {
+        console.error(`[${nodeId}] Erreur lors de l'appel de client-a.tool1:`, error.message);
+      }
+      
+      // Essayer d'appeler client-b.tool3
+      try {
+        console.error(`[${nodeId}] Appel manuel de client-b.tool3...`);
+        const tool3Result = await client.callTool({
+          name: "call-remote-tool",
+          arguments: {
+            fromNode: nodeId,
+            toolId: "client-b.tool3",
+            args: { param: "appel manuel", from: nodeId }
+          }
+        });
+        console.error(`[${nodeId}] Résultat:`, tool3Result.content[0].text);
+      } catch (error) {
+        console.error(`[${nodeId}] Erreur lors de l'appel de client-b.tool3:`, error.message);
+      }
+    }, 3000);
+    
+    // Gestion de l'arrêt propre
+    process.on('SIGINT', async () => {
+      console.error(`\n[${nodeId}] Arrêt en cours...`);
+      clearInterval(heartbeatInterval);
+      clearInterval(toolCheckInterval);
+      await client.close();
+      process.exit(0);
+    });
+    
+    // Maintenir le processus actif
     console.error(`[${nodeId}] En attente de requêtes...`);
-    await new Promise(resolve => setTimeout(resolve, 60000));
+    await new Promise(() => {}); // Promise qui ne se résout jamais
     
   } catch (error) {
     console.error(`[${nodeId}] Erreur:`, error);
-  } finally {
-    await client.close();
-    console.error(`[${nodeId}] Connexion fermée`);
   }
 }
 

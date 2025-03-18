@@ -6,6 +6,10 @@ import fs from 'fs';
 // Fichier pour persister l'état du hub entre les exécutions
 const STATE_FILE = './hub-state.json';
 
+// État des nœuds actifs et leurs dernières pulsations
+const activeNodes = new Map();
+const HEARTBEAT_TIMEOUT = 30000; // 30 secondes
+
 // Initialiser ou charger l'état
 let initialState = { nodes: {}, tools: {} };
 try {
@@ -13,8 +17,25 @@ try {
     const data = fs.readFileSync(STATE_FILE, 'utf8');
     initialState = JSON.parse(data);
     console.error('[Hub] État chargé:', 
-                  Object.keys(initialState.nodes).length, 'nœuds,',
-                  Object.keys(initialState.tools).length, 'outils');
+                Object.keys(initialState.nodes).length, 'nœuds,',
+                Object.keys(initialState.tools).length, 'outils');
+                
+    initialState.nodes = Object.fromEntries(
+      Object.entries(initialState.nodes).map(([id, info]) => {
+        // Marquer tous les nœuds comme actifs par défaut
+        const now = Date.now();
+        activeNodes.set(id, now);
+        return [id, { ...info, lastSeen: new Date(now).toISOString() }];
+      })
+    );
+    // Rendre tous les nœuds actifs par défaut lors du chargement
+    const now = Date.now();
+    Object.keys(initialState.nodes).forEach(id => {
+      activeNodes.set(id, now);
+      initialState.nodes[id].lastSeen = new Date(now).toISOString();
+      initialState.nodes[id].connected = true;
+      console.error(`[Hub] Nœud ${id} marqué comme actif automatiquement`);
+    });
   }
 } catch (err) {
   console.error('[Hub] Erreur lors du chargement de l\'état:', err);
@@ -40,13 +61,13 @@ function saveState() {
 }
 
 // Création du serveur MCP
-const server = new McpServer({
+const mcpServer = new McpServer({
   name: "mcp-hub",
   version: "1.0.0",
 });
 
 // Outil pour enregistrer un nœud
-server.tool(
+mcpServer.tool(
   "register-node",
   "Enregistrer un nœud dans le réseau MCP",
   {
@@ -54,7 +75,9 @@ server.tool(
     type: z.string().describe("Type de nœud (client/server/claude)")
   },
   async ({ id, type }) => {
-    nodes.set(id, { type, connected: true, lastSeen: new Date() });
+    const now = new Date();
+    nodes.set(id, { type, connected: true, lastSeen: now.toISOString() });
+    activeNodes.set(id, now.getTime());
     console.error(`[Hub] Nœud enregistré: ${id} (${type})`);
     saveState();
     
@@ -64,8 +87,37 @@ server.tool(
   }
 );
 
+// Outil pour le heartbeat des nœuds
+mcpServer.tool(
+  "heartbeat",
+  "Signaler qu'un nœud est toujours actif",
+  {
+    id: z.string().describe("Identifiant unique du nœud")
+  },
+  async ({ id }) => {
+    const now = new Date();
+    if (nodes.has(id)) {
+      const nodeInfo = nodes.get(id);
+      nodeInfo.lastSeen = now.toISOString();
+      nodes.set(id, nodeInfo);
+      activeNodes.set(id, now.getTime());
+      
+      return {
+        content: [{ type: "text", text: JSON.stringify({ success: true }) }]
+      };
+    } else {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ 
+          success: false, 
+          error: `Nœud inconnu: ${id}` 
+        }) }]
+      };
+    }
+  }
+);
+
 // Outil pour enregistrer un outil
-server.tool(
+mcpServer.tool(
   "register-tool",
   "Enregistrer un outil disponible sur un nœud",
   {
@@ -100,23 +152,29 @@ server.tool(
 );
 
 // Outil pour lister tous les outils disponibles
-server.tool(
+mcpServer.tool(
   "list-tools",
   "Lister tous les outils disponibles sur le réseau",
   {},
   async () => {
-    console.error(`[Hub] Liste des outils demandée - ${tools.size} outil(s) disponible(s)`);
+    // Filtrer pour ne récupérer que les outils des nœuds actifs
+    const activeTools = Array.from(tools.values()).filter(tool => {
+      return activeNodes.has(tool.nodeId);
+    });
+    
+    console.error(`[Hub] Liste des outils demandée - ${activeTools.length} outil(s) actif(s) sur ${tools.size} total`);
+    
     return {
       content: [{ 
         type: "text", 
-        text: JSON.stringify(Array.from(tools.values())) 
+        text: JSON.stringify(activeTools) 
       }]
     };
   }
 );
 
 // Outil pour appeler un outil distant
-server.tool(
+mcpServer.tool(
   "call-remote-tool",
   "Appeler un outil sur un autre nœud",
   {
@@ -142,6 +200,14 @@ server.tool(
     }
     
     const tool = tools.get(toolId);
+    const targetNodeId = tool.nodeId;
+    
+    // Vérifier si le nœud cible est actif
+    if (!activeNodes.has(targetNodeId)) {
+      return {
+        content: [{ type: "text", text: `Nœud cible inactif: ${targetNodeId}` }]
+      };
+    }
     
     // Dans une implémentation réelle, il faudrait ici rediriger l'appel vers le nœud cible
     // Ici, nous simulons l'exécution
@@ -170,19 +236,37 @@ toolExecutions.set("client-b.tool3", (args) => `Résultat de tool3 avec ${JSON.s
 toolExecutions.set("client-b.tool4", (args) => `Résultat de tool4 avec ${JSON.stringify(args)}`);
 toolExecutions.set("server.base-tool", (args) => `Résultat du serveur avec ${JSON.stringify(args)}`);
 
+// Vérificateur périodique de l'activité des nœuds
+setInterval(() => {
+  const now = Date.now();
+  let nodesChanged = false;
+  
+  for (const [nodeId, lastSeen] of activeNodes.entries()) {
+    if (now - lastSeen > HEARTBEAT_TIMEOUT) {
+      console.error(`[Hub] Nœud inactif détecté: ${nodeId}`);
+      activeNodes.delete(nodeId);
+      nodesChanged = true;
+    }
+  }
+  
+  if (nodesChanged) {
+    saveState();
+  }
+}, 10000);
+
 // Démarrage du hub
 const transport = new StdioServerTransport();
-await server.connect(transport);
+await mcpServer.connect(transport);
 console.error("[Hub] Hub MCP démarré - en attente de connexions");
 
 // Sauvegarde périodique de l'état
-setInterval(saveState, 10000);
+setInterval(saveState, 30000);
 
 // Gestion des erreurs
 process.on("uncaughtException", (err) => {
-  console.error("[Hub] Erreur non gérée:", err);
+  console.error('[Hub] Erreur non gérée:', err);
 });
 
 process.on("unhandledRejection", (reason) => {
-  console.error("[Hub] Promesse rejetée non gérée:", reason);
+  console.error('[Hub] Promesse rejetée non gérée:', reason);
 });
