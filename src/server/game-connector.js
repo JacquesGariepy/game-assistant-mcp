@@ -32,7 +32,10 @@ export class GameState {
   }
   
   async initialize() {
-    console.log("Initialisation de GameState...");
+    console.log(JSON.stringify({
+      status: "initializing",
+      message: "Initialisation de GameState..."
+    }));
     
     // Assurer que les assets minimaux sont disponibles
     this._ensureAssets();
@@ -48,7 +51,10 @@ export class GameState {
     this.quests = this.simulatedState.quests;
     this.isInitialized = true;
     
-    console.log("GameState initialisé avec succès");
+    console.log(JSON.stringify({
+      status: "initialized",
+      message: "GameState initialisé avec succès"
+    }));
     return true;
   }
   
@@ -154,7 +160,10 @@ export class GameState {
    * Charge les assets pour le jeu (version simulée)
    */
   async loadAssets() {
-    console.log("Simulation du chargement des assets...");
+    console.log(JSON.stringify({
+      status: "loading_assets",
+      message: "Chargement des assets..."
+    }));
     
     // Simuler un délai de chargement
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -177,7 +186,10 @@ export class GameState {
       this.assetCache.textures[name] = texture;
     }
     
-    console.log("Assets simulés chargés avec succès");
+    console.log(JSON.stringify({
+      status: "assets_loaded",
+      message: "Assets chargés avec succès"
+    }));
     return true;
   }
   
@@ -188,7 +200,10 @@ export class GameState {
   }
   
   _createMockScene() {
-    console.log("Création de la scène simulée...");
+    console.log(JSON.stringify({
+      status: "creating_scene",
+      message: "Création de la scène simulée..."
+    }));
     
     // Créer une scène Three.js simulée
     const scene = new THREE.Scene();
@@ -300,7 +315,10 @@ export class GameState {
     directionalLight.name = "directionalLight";
     scene.add(directionalLight);
     
-    console.log("Scène simulée créée avec succès");
+    console.log(JSON.stringify({
+      status: "scene_created",
+      message: "Scène simulée créée avec succès"
+    }));
     return scene;
   }
   
@@ -398,7 +416,11 @@ export class GameState {
     if (!item) return false;
     
     item.equipped = true;
-    console.log(`Équipement de ${item.name} sur le personnage`);
+    console.log(JSON.stringify({
+      action: "equip_item",
+      item: item.name,
+      success: true
+    }));
     return true;
   }
   
@@ -407,7 +429,10 @@ export class GameState {
    * @param {object} position - {x, y, z}
    */
   async movePlayerTo(x, y, z) {
-    console.error(`Déplacement du joueur vers (${x}, ${y}, ${z})`);
+    console.log(JSON.stringify({
+      action: "move_player",
+      position: {x, y, z}
+    }));
     
     if (this.scene) {
       const playerObject = this.scene.getObjectByName("player");
@@ -419,17 +444,23 @@ export class GameState {
           // Méthode 1: Utiliser copy au lieu de set
           playerObject.position.copy(newPosition);
           
-          // Méthode 2 (alternative): Modifier les composants individuellement
-          // playerObject.position.x = x;
-          // playerObject.position.y = y;
-          // playerObject.position.z = z;
-          
           // Mettre à jour les données du joueur
           this.player.position = { x, y, z };
+          
+          console.log(JSON.stringify({
+            action: "move_player",
+            result: "success",
+            position: {x, y, z}
+          }));
           return true;
         } catch (error) {
-          console.error(`Erreur lors du déplacement: ${error.message}`);
-          // Tentative de solution alternative si la méthode principale échoue
+          console.log(JSON.stringify({
+            action: "move_player",
+            result: "error",
+            message: error.message
+          }));
+          
+          // Tentative de solution alternative
           try {
             // Créer un nouveau groupe et y transférer le contenu
             const newPlayerGroup = new THREE.Group();
@@ -449,14 +480,30 @@ export class GameState {
             
             // Mettre à jour les données du joueur
             this.player.position = { x, y, z };
+            
+            console.log(JSON.stringify({
+              action: "move_player",
+              result: "success_alternative",
+              position: {x, y, z}
+            }));
             return true;
           } catch (err) {
-            console.error(`Tentative alternative échouée: ${err.message}`);
+            console.log(JSON.stringify({
+              action: "move_player",
+              result: "error_alternative",
+              message: err.message
+            }));
             return false;
           }
         }
       }
     }
+    
+    console.log(JSON.stringify({
+      action: "move_player",
+      result: "fail",
+      reason: "player_not_found"
+    }));
     return false;
   }
   
@@ -556,29 +603,26 @@ export class GameState {
     marker.name = `marker_${type}_${Date.now()}`;
     
     this.scene.add(marker);
-    return marker;
-  }
-  // Méthodes d'interaction avec le joueur dans GameState
-
-  // Déplacer le joueur vers une position
-  async movePlayerTo(x, y, z) {
-    console.error(`Déplacement du joueur vers (${x}, ${y}, ${z})`);
     
-    if (this.scene) {
-      const playerObject = this.scene.getObjectByName("player");
-      if (playerObject) {
-        // Utiliser set() au lieu d'une assignation directe
-        playerObject.position.set(x, y, z);
-        this.player.position = { x, y, z };
-        return true;
+    console.log(JSON.stringify({
+      action: "create_marker",
+      type: type,
+      position: {
+        x: position.x,
+        y: position.y,
+        z: position.z
       }
-    }
-    return false;
+    }));
+    
+    return marker;
   }
 
   // Faire interagir le joueur avec un objet
   async interactWithObject(objectId) {
-    console.error(`Interaction avec l'objet ${objectId}`);
+    console.log(JSON.stringify({
+      action: "interact",
+      object_id: objectId
+    }));
     
     if (this.scene) {
       const object = this._findObjectById(this.scene, objectId);
@@ -639,7 +683,11 @@ export class GameState {
 
   // Exécuter une action du joueur
   async performAction(actionType, params = {}) {
-    console.error(`Exécution de l'action ${actionType}`);
+    console.log(JSON.stringify({
+      action: "perform_action",
+      action_type: actionType,
+      params: params
+    }));
     
     const actions = {
       "jump": () => {
@@ -727,5 +775,4 @@ export class GameState {
     const dz = pos1.z - pos2.z;
     return Math.sqrt(dx*dx + dy*dy + dz*dz);
   }
-
 }

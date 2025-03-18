@@ -1,4 +1,4 @@
-<!-- client/index.html -->
+<!-- client/index.html avec GameStateSync intégré -->
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -16,6 +16,7 @@
         #object-info { background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 0.9em; }
         #sync-indicator { position: absolute; top: 10px; left: 10px; color: white; background: rgba(0,0,0,0.7); padding: 5px; border-radius: 3px; }
         #keyboard-guide { position: absolute; left: 10px; top: 50px; background: rgba(0,0,0,0.7); color: white; padding: 10px; border-radius: 5px; z-index: 1000; }
+        #connection-status { position: absolute; top: 40px; left: 10px; color: white; background: rgba(0,0,0,0.7); padding: 5px; border-radius: 3px; }
     </style>
 </head>
 <body>
@@ -40,6 +41,7 @@
     
     <div id="player-coords">Joueur: x=0.00, y=0.00, z=0.00</div>
     <div id="sync-indicator">État: Synchronisé</div>
+    <div id="connection-status">Connexion: Déconnecté</div>
     
     <div id="keyboard-guide">
         <h3>Contrôles clavier</h3>
@@ -125,8 +127,272 @@
             // Socket d'écoute pour les messages MCP
             setupMessageListener();
             
+            // Initialiser la synchronisation d'état
+            window.gameStateSync = new GameStateSync({
+                scene: scene,
+                centerCameraOnPlayer: centerCameraOnPlayer
+            });
+            
             // Auto-sync check
             setInterval(checkPlayerPosition, 100);
+        }
+        
+        // Classe pour synchroniser l'état du jeu avec le serveur MCP
+        class GameStateSync {
+            constructor(gameViewer) {
+                this.gameViewer = gameViewer;
+                this.player = null;
+                this.ws = null;
+                this.reconnectInterval = null;
+                
+                // Trouver le joueur dans la scène
+                if (gameViewer.scene) {
+                    this.player = gameViewer.scene.getObjectByName('player');
+                }
+                
+                // Configuration du canal de communication
+                this.setupWebSocket();
+                this.setupLocalStorageSync();
+                this.setupConsoleInterception();
+                
+                // Position actuelle du joueur
+                this.currentPosition = { x: 0, y: 0, z: 0 };
+                if (this.player) {
+                    this.currentPosition = {
+                        x: this.player.position.x,
+                        y: this.player.position.y,
+                        z: this.player.position.z
+                    };
+                }
+            }
+            
+            // Configurer WebSocket pour la communication bidirectionnelle
+            setupWebSocket() {
+                try {
+                    this.ws = new WebSocket('ws://localhost:8080');
+                    
+                    this.ws.onopen = () => {
+                        console.log('WebSocket: Connexion établie');
+                        clearInterval(this.reconnectInterval);
+                        
+                        // Mettre à jour l'indicateur de statut
+                        const statusElement = document.getElementById('connection-status');
+                        if (statusElement) {
+                            statusElement.textContent = 'Connexion: Connecté';
+                            statusElement.style.color = 'lime';
+                        }
+                        
+                        // Demander une synchronisation complète
+                        this.ws.send(JSON.stringify({
+                            type: 'REQUEST_SYNC'
+                        }));
+                    };
+                    
+                    this.ws.onmessage = (event) => {
+                        try {
+                            const message = JSON.parse(event.data);
+                            this.handleServerMessage(message);
+                        } catch (error) {
+                            console.error('WebSocket: Erreur de parsing:', error);
+                        }
+                    };
+                    
+                    this.ws.onerror = (error) => {
+                        console.error('WebSocket: Erreur:', error);
+                        const statusElement = document.getElementById('connection-status');
+                        if (statusElement) {
+                            statusElement.textContent = 'Connexion: Erreur';
+                            statusElement.style.color = 'red';
+                        }
+                    };
+                    
+                    this.ws.onclose = () => {
+                        console.log('WebSocket: Connexion fermée');
+                        
+                        // Mettre à jour l'indicateur de statut
+                        const statusElement = document.getElementById('connection-status');
+                        if (statusElement) {
+                            statusElement.textContent = 'Connexion: Reconnexion...';
+                            statusElement.style.color = 'orange';
+                        }
+                        
+                        // Tentative de reconnexion automatique
+                        if (!this.reconnectInterval) {
+                            this.reconnectInterval = setInterval(() => {
+                                console.log('WebSocket: Tentative de reconnexion...');
+                                this.setupWebSocket();
+                            }, 5000);
+                        }
+                    };
+                } catch (error) {
+                    console.error('WebSocket: Erreur de configuration:', error);
+                    const statusElement = document.getElementById('connection-status');
+                    if (statusElement) {
+                        statusElement.textContent = 'Connexion: Erreur';
+                        statusElement.style.color = 'red';
+                    }
+                }
+            }
+            
+            // Gérer les messages venant du serveur
+            handleServerMessage(message) {
+                console.log('WebSocket: Message reçu:', message);
+                
+                switch (message.type) {
+                    case 'PLAYER_MOVED':
+                        this.updatePlayerPositionUI(message.position.x, message.position.y, message.position.z);
+                        break;
+                        
+                    case 'GAME_STATE_FULL':
+                        this.updateFullGameState(message.data);
+                        break;
+                        
+                    case 'PLAYER_ACTION_RESULT':
+                        // Traiter le résultat d'une action
+                        console.log(`Action ${message.action} result: ${message.result}`);
+                        break;
+                        
+                    default:
+                        console.log('WebSocket: Type de message inconnu:', message.type);
+                }
+            }
+            
+            // Mettre à jour la position du joueur dans l'UI
+            updatePlayerPositionUI(x, y, z) {
+                if (this.player) {
+                    // Mettre à jour la position du joueur dans la scène
+                    this.player.position.set(x, y, z);
+                    
+                    // Mettre à jour l'affichage des coordonnées si disponible
+                    const coordsDiv = document.getElementById('player-coords');
+                    if (coordsDiv) {
+                        coordsDiv.textContent = `Joueur: x=${x.toFixed(2)}, y=${y.toFixed(2)}, z=${z.toFixed(2)}`;
+                    }
+                    
+                    // Centrer la caméra sur le joueur si activé
+                    if (window.cameraFollowsPlayer && this.gameViewer.centerCameraOnPlayer) {
+                        this.gameViewer.centerCameraOnPlayer(true);
+                    }
+                    
+                    // Stocker la position actuelle
+                    this.currentPosition = { x, y, z };
+                    playerLastPosition = { x, y, z }; // Mettre à jour la variable globale également
+                    
+                    // Indiquer la synchronisation
+                    showSyncStatus("Position mise à jour", "lime");
+                    
+                    console.log(`Position du joueur mise à jour vers (${x}, ${y}, ${z})`);
+                }
+            }
+            
+            // Mettre à jour l'état complet du jeu
+            updateFullGameState(data) {
+                console.log('Mise à jour de l\'état complet du jeu:', data);
+                
+                // Mettre à jour la position du joueur
+                if (data.player && data.player.position) {
+                    this.updatePlayerPositionUI(
+                        data.player.position.x,
+                        data.player.position.y,
+                        data.player.position.z
+                    );
+                }
+                
+                // Mettre à jour d'autres aspects du jeu si nécessaire
+                // ...
+                
+                showSyncStatus("État du jeu synchronisé", "lime");
+            }
+            
+            // Configuration pour la synchronisation via localStorage
+            setupLocalStorageSync() {
+                // Écouter les changements de localStorage
+                window.addEventListener('storage', (event) => {
+                    if (event.key === 'mcp_player_position') {
+                        try {
+                            const position = JSON.parse(event.newValue);
+                            this.updatePlayerPositionUI(position.x, position.y, position.z);
+                        } catch (error) {
+                            console.error('Erreur lors du parsing de la position:', error);
+                        }
+                    }
+                });
+                
+                // Vérifier périodiquement les changements dans localStorage
+                setInterval(() => {
+                    try {
+                        const positionStr = localStorage.getItem('mcp_player_position');
+                        if (positionStr) {
+                            const position = JSON.parse(positionStr);
+                            
+                            // Vérifier si la position a changé
+                            if (position.x !== this.currentPosition.x || 
+                                position.y !== this.currentPosition.y || 
+                                position.z !== this.currentPosition.z) {
+                                this.updatePlayerPositionUI(position.x, position.y, position.z);
+                            }
+                        }
+                    } catch (e) {
+                        // Ignorer les erreurs
+                    }
+                }, 100);
+            }
+            
+            // Intercepter les logs console pour détecter les commandes du serveur MCP
+            setupConsoleInterception() {
+                const originalConsoleError = console.error;
+                console.error = (...args) => {
+                    // Vérifier si c'est une commande de déplacement
+                    if (args.length > 0 && typeof args[0] === 'string' && args[0].startsWith('PLAYER_MOVE_COMMAND:')) {
+                        const command = args[0].substring('PLAYER_MOVE_COMMAND:'.length);
+                        try {
+                            // Exécuter la commande
+                            eval(command);
+                            showSyncStatus("Commande MCP exécutée", "cyan");
+                        } catch (error) {
+                            console.warn('Erreur lors de l\'exécution de la commande:', error);
+                            showSyncStatus("Erreur de commande", "red");
+                        }
+                    }
+                    
+                    // Appel original
+                    return originalConsoleError.apply(console, args);
+                };
+            }
+            
+            // Méthode pour notifier le serveur d'un déplacement du joueur
+            notifyPlayerMoved(x, y, z) {
+                // Mettre à jour la position locale
+                this.currentPosition = { x, y, z };
+                
+                // Notification via WebSocket
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                        type: 'PLAYER_MOVED',
+                        position: { x, y, z }
+                    }));
+                    showSyncStatus("Position envoyée au serveur", "yellow");
+                }
+                
+                // Fallback via localStorage
+                try {
+                    localStorage.setItem('mcp_player_position', JSON.stringify({ x, y, z }));
+                } catch (e) {
+                    // Ignorer les erreurs
+                }
+            }
+            
+            // Méthode pour notifier le serveur d'une action du joueur
+            notifyPlayerAction(action, params) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                        type: 'PLAYER_ACTION',
+                        action: action,
+                        params: params
+                    }));
+                    showSyncStatus(`Action ${action} envoyée`, "yellow");
+                }
+            }
         }
         
         function createScene() {
@@ -290,6 +556,15 @@
             if (moved) {
                 player.position.add(movement);
                 updatePlayerCoords();
+                
+                // IMPORTANT: Notifier le serveur du déplacement via GameStateSync
+                if (window.gameStateSync) {
+                    window.gameStateSync.notifyPlayerMoved(
+                        player.position.x,
+                        player.position.y,
+                        player.position.z
+                    );
+                }
                 
                 // Mettre à jour dans localStorage pour synchronisation
                 localStorage.setItem('mcp_player_position', JSON.stringify({
@@ -527,7 +802,13 @@
             document.getElementById('test-move-player').addEventListener('click', () => {
                 if (player) {
                     player.moveToPosition(0, 0, 5);
-                    // Stocker également dans localStorage pour que le MCP puisse y accéder
+                    
+                    // Notifier le serveur via GameStateSync
+                    if (window.gameStateSync) {
+                        window.gameStateSync.notifyPlayerMoved(0, 0, 5);
+                    }
+                    
+                    // Stocker également dans localStorage pour synchronisation
                     localStorage.setItem('mcp_player_position', JSON.stringify({ x: 0, y: 0, z: 5 }));
                     showSyncStatus("Déplacé manuellement", "cyan");
                 }
@@ -536,6 +817,12 @@
             document.getElementById('reset-player').addEventListener('click', () => {
                 if (player) {
                     player.moveToPosition(0, 0, 0);
+                    
+                    // Notifier le serveur via GameStateSync
+                    if (window.gameStateSync) {
+                        window.gameStateSync.notifyPlayerMoved(0, 0, 0);
+                    }
+                    
                     showSyncStatus("Position réinitialisée", "yellow");
                 }
             });

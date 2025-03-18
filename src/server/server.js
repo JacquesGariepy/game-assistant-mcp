@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import z from "zod";
+import EventEmitter from 'events';
 
 import { GameState } from "./game-connector.js";
 import { analyzeScene, getObjectDetails, getRenderStats } from "./game-analyzer.js";
@@ -10,14 +11,359 @@ import {
   getGameHint, suggestStrategy, identifyObstacles, getQuestGuide 
 } from "./player-assistant.js";
 
+// Bus d'événements global pour la communication bidirectionnelle
+export const eventBus = new EventEmitter();
+
 // Initialisation du connecteur au jeu
-const gameState = new GameState();
+const gameState = new GameState(eventBus);
 
 // Création du serveur MCP
 const server = new McpServer({
   name: "game-assistant-server",
   version: "1.0.0",
 });
+
+// ID unique pour les messages JSON-RPC
+let messageId = 1;
+const getNextMessageId = () => messageId++;
+
+// Fonction pour créer des messages JSON-RPC 2.0
+function createJsonRpcMessage(method, params = null, id = null) {
+  return {
+    jsonrpc: "2.0",
+    method: method,
+    params: params,
+    id: id !== null ? id : getNextMessageId()
+  };
+}
+
+// Fonction pour créer des réponses JSON-RPC 2.0
+function createJsonRpcResponse(id, result = null, error = null) {
+  const response = {
+    jsonrpc: "2.0",
+    id: id
+  };
+  
+  if (error !== null) {
+    response.error = error;
+  } else {
+    response.result = result;
+  }
+  
+  return response;
+}
+
+// Mise à jour de la position du joueur depuis le serveur ou l'UI
+function updatePlayerPosition(position) {
+  // Debug log pour la position
+  console.log(JSON.stringify(createJsonRpcMessage(
+    "debug",
+    {
+      type: "position_update",
+      position: position
+    }
+  )));
+  
+  // S'assurer que la position a les propriétés nécessaires
+  if (!position || (position.x === undefined && position.y === undefined && position.z === undefined)) {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "debug",
+      {
+        type: "position_error",
+        message: "Format de position invalide",
+        position: position
+      }
+    )));
+    return false;
+  }
+  
+  // Créer un objet position complet
+  const fullPosition = {
+    x: position.x !== undefined ? position.x : (gameState.player?.position?.x || 0),
+    y: position.y !== undefined ? position.y : (gameState.player?.position?.y || 0),
+    z: position.z !== undefined ? position.z : (gameState.player?.position?.z || 0)
+  };
+  
+  // Mettre à jour le GameState
+  if (gameState.player) {
+    // Mettre à jour directement avec les nouvelles coordonnées
+    gameState.player.position = fullPosition;
+    
+    // Debug log après mise à jour
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "debug",
+      {
+        type: "gamestate_position_updated",
+        new_position: gameState.player.position
+      }
+    )));
+  }
+  
+  // Si un objet joueur existe dans la scène, mettre à jour sa position aussi
+  if (gameState.scene) {
+    const playerObject = gameState.scene.getObjectByName("player");
+    if (playerObject) {
+      playerObject.position.set(fullPosition.x, fullPosition.y, fullPosition.z);
+      
+      // Debug log après mise à jour de l'objet scène
+      console.log(JSON.stringify(createJsonRpcMessage(
+        "debug",
+        {
+          type: "scene_object_position_updated",
+          object: "player"
+        }
+      )));
+      
+      return true;
+    } else {
+      // L'objet joueur n'a pas été trouvé dans la scène
+      console.log(JSON.stringify(createJsonRpcMessage(
+        "debug",
+        {
+          type: "scene_error",
+          message: "Objet joueur non trouvé dans la scène"
+        }
+      )));
+    }
+  } else {
+    // La scène n'est pas initialisée
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "debug",
+      {
+        type: "scene_error",
+        message: "Scène non initialisée"
+      }
+    )));
+  }
+  
+  return !!gameState.player;
+}
+
+// Configuration des écouteurs d'événements pour recevoir les mises à jour de l'UI
+setupEventListeners();
+
+function setupEventListeners() {
+  // Écouter les mises à jour de position du joueur venant de l'UI
+  eventBus.on('ui:player_position_changed', (position) => {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        event: "ui:player_position_changed",
+        position: position
+      },
+      null // Notification = pas d'ID
+    )));
+    
+    // Utiliser la fonction centralisée pour mettre à jour la position
+    updatePlayerPosition(position);
+  });
+  
+  // Écouter les mises à jour de statistiques du joueur
+  eventBus.on('ui:player_stats_changed', (stats) => {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        event: "ui:player_stats_changed",
+        stats: stats
+      },
+      null
+    )));
+    
+    // Mettre à jour le GameState
+    if (gameState.player) {
+      Object.assign(gameState.player, stats);
+    }
+  });
+  
+  // Écouter les événements d'interaction avec les objets
+  eventBus.on('ui:object_interaction', (data) => {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        event: "ui:object_interaction",
+        data: data
+      },
+      null
+    )));
+    
+    // Traiter l'interaction selon le type d'objet
+    if (data.objectType === 'npc') {
+      // Logique pour interaction avec PNJ
+    } else if (data.objectType === 'container') {
+      // Logique pour interaction avec conteneur
+    }
+  });
+  
+  // Écouter les événements de progression de quête
+  eventBus.on('ui:quest_progress', (data) => {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        event: "ui:quest_progress",
+        data: data
+      },
+      null
+    )));
+    
+    // Mettre à jour l'état des quêtes
+    if (gameState.quests) {
+      const quest = gameState.quests.find(q => q.id === data.questId);
+      if (quest) {
+        const objective = quest.objectives.find(o => o.id === data.objectiveId);
+        if (objective) {
+          objective.status = data.status;
+        }
+      }
+    }
+  });
+  
+  // Écouter les événements de changement d'environnement
+  eventBus.on('ui:environment_changed', (environmentData) => {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        event: "ui:environment_changed",
+        data: environmentData
+      },
+      null
+    )));
+    
+    // Mettre à jour l'environnement de jeu
+    if (gameState.environment) {
+      Object.assign(gameState.environment, environmentData);
+    }
+  });
+  
+  // Écouter les événements de position directement envoyés par l'UI (nouveau)
+  eventBus.on('ui:position', (position) => {
+    console.log(JSON.stringify(createJsonRpcMessage(
+      "notify",
+      {
+        event: "ui:position",
+        position: position
+      },
+      null
+    )));
+    
+    // Utiliser la fonction centralisée pour mettre à jour la position
+    updatePlayerPosition(position);
+  });
+}
+
+// Communication bidirectionnelle avec l'UI via message channel
+setupMessageChannel();
+
+function setupMessageChannel() {
+  // En environnement Node.js, nous pouvons utiliser process.stdin/stdout
+  // pour communiquer avec l'UI
+  
+  // Lire les messages de l'UI
+  process.stdin.on('data', (data) => {
+    try {
+      const message = JSON.parse(data.toString());
+      
+      // Log du message reçu pour debug
+      console.log(JSON.stringify(createJsonRpcMessage(
+        "debug",
+        {
+          type: "received_message",
+          message: message
+        }
+      )));
+      
+      // Cas spécial pour les mises à jour de position - traitement prioritaire
+      if (message.method === "update_position" && message.params && message.params.position) {
+        updatePlayerPosition(message.params.position);
+        
+        // Envoyer une réponse de succès si un ID est présent
+        if (message.id !== null && message.id !== undefined) {
+          process.stdout.write(JSON.stringify(createJsonRpcResponse(
+            message.id,
+            { success: true }
+          )) + '\n');
+        }
+        return;
+      }
+      
+      // Vérifier si le message suit le format JSON-RPC 2.0
+      if (message.jsonrpc === "2.0" && message.method) {
+        // Traiter les requêtes JSON-RPC
+        if (message.method === "event" && message.params) {
+          // Rediriger l'événement vers le bus d'événements
+          if (message.params.event && message.params.data) {
+            eventBus.emit(message.params.event, message.params.data);
+            
+            // Cas spécial pour les événements de position
+            if (message.params.event === "ui:player_position_changed" || 
+                message.params.event === "player_moved") {
+              updatePlayerPosition(message.params.data);
+            }
+            
+            // Envoyer une réponse de succès si un ID est présent
+            if (message.id !== null && message.id !== undefined) {
+              process.stdout.write(JSON.stringify(createJsonRpcResponse(
+                message.id,
+                { success: true }
+              )) + '\n');
+            }
+          }
+        } else {
+          // Autres méthodes RPC peuvent être implémentées ici
+          console.log(JSON.stringify(createJsonRpcResponse(
+            message.id || null,
+            null,
+            { code: -32601, message: "Méthode non trouvée" }
+          )));
+        }
+      } else {
+        // Essayer de détecter les formats non-standard mais contenant des informations de position
+        if (message.position || message.playerPosition || 
+            (message.data && (message.data.position || message.data.playerPosition))) {
+          
+          const position = message.position || message.playerPosition || 
+                          message.data?.position || message.data?.playerPosition;
+          
+          if (position) {
+            updatePlayerPosition(position);
+          }
+          return;
+        }
+        
+        // Format erroné - renvoyer une erreur JSON-RPC
+        console.log(JSON.stringify(createJsonRpcResponse(
+          message.id || null,
+          null,
+          { code: -32600, message: "Format de requête JSON-RPC invalide" }
+        )));
+      }
+    } catch (error) {
+      console.log(JSON.stringify(createJsonRpcResponse(
+        null,
+        null,
+        { code: -32700, message: `Erreur de parsing JSON: ${error.message}` }
+      )));
+    }
+  });
+  
+  // Envoyer des messages à l'UI
+  eventBus.on('server:send_to_ui', (data) => {
+    try {
+      process.stdout.write(JSON.stringify(createJsonRpcMessage(
+        "notify",
+        {
+          event: 'server:message',
+          data: data
+        }
+      )) + '\n');
+    } catch (error) {
+      console.log(JSON.stringify(createJsonRpcResponse(
+        null,
+        null,
+        { code: -32603, message: `Erreur d'envoi à l'UI: ${error.message}` }
+      )));
+    }
+  });
+}
 
 // ------------------------------------------------
 // Définition des ressources
@@ -59,9 +405,34 @@ server.resource(
   }
 );
 
+// Ajouter une nouvelle ressource pour obtenir la position actuelle du joueur
+server.resource(
+  "player_position",
+  "Position actuelle du joueur dans le monde",
+  async () => {
+    if (gameState.player && gameState.player.position) {
+      return JSON.stringify(gameState.player.position, null, 2);
+    }
+    return JSON.stringify({ x: 0, y: 0, z: 0 }, null, 2);
+  }
+);
+
 // ------------------------------------------------
 // Définition des outils
 // ------------------------------------------------
+
+// Wrapper pour standardiser les réponses des outils au format JSON-RPC
+function toolResponseWrapper(response, hasError = false) {
+  if (hasError) {
+    return {
+      isError: true,
+      content: response.content
+    };
+  }
+  return {
+    content: response.content
+  };
+}
 
 // 1. Analyse de la scène 3D
 server.tool(
@@ -75,24 +446,23 @@ server.tool(
     try {
       const analysis = await analyzeScene(gameState, detail_level, focus_area);
       
-      return {
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: analysis,
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors de l'analyse de la scène: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -109,24 +479,23 @@ server.tool(
     try {
       const objectDetails = await getObjectDetails(gameState, object_id, include_mesh_data);
       
-      return {
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: objectDetails,
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors de la récupération des détails de l'objet: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -148,7 +517,14 @@ server.tool(
       // Générer une visualisation du terrain
       const terrain_preview = await gameState.generateTerrainPreview(result.terrain_id);
       
-      return {
+      // Notifier l'UI de la nouvelle génération
+      eventBus.emit('server:send_to_ui', {
+        action: 'terrain_generated',
+        terrain_id: result.terrain_id,
+        terrain_type: terrain_type
+      });
+      
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
@@ -164,18 +540,17 @@ server.tool(
             data: terrain_preview.base64_image,
             mimeType: "image/png",
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors de la génération du terrain: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -203,7 +578,15 @@ server.tool(
       // Générer un aperçu du PNJ
       const npc_preview = await gameState.generateNPCPreview(npc.id);
       
-      return {
+      // Notifier l'UI de la création du PNJ
+      eventBus.emit('server:send_to_ui', {
+        action: 'npc_created',
+        npc_id: npc.id,
+        npc_type: character_type,
+        npc_data: npc
+      });
+      
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
@@ -219,18 +602,17 @@ server.tool(
             data: npc_preview.base64_image,
             mimeType: "image/png",
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors de la création du PNJ: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -250,7 +632,14 @@ server.tool(
     try {
       const quest = await designQuest(quest_title, quest_type, difficulty, rewards, description);
       
-      return {
+      // Notifier l'UI de la création de quête
+      eventBus.emit('server:send_to_ui', {
+        action: 'quest_designed',
+        quest_id: quest.id,
+        quest_data: quest
+      });
+      
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
@@ -261,18 +650,17 @@ server.tool(
                   `Étapes:\n${quest.steps.map(step => `- ${step}`).join("\n")}\n\n` +
                   `La quête a été ajoutée au système. Utilisez 'activate_quest' pour l'activer dans le jeu.`,
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors de la conception de la quête: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -289,24 +677,23 @@ server.tool(
     try {
       const hint = await getGameHint(gameState, hint_type, specificity);
       
-      return {
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: hint,
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors de la génération d'indice: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -322,7 +709,7 @@ server.tool(
     try {
       const stats = await getRenderStats(gameState, detailed);
       
-      return {
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
@@ -336,18 +723,17 @@ server.tool(
                   `## Recommandations\n\n` +
                   stats.recommendations.map(rec => `- ${rec}`).join("\n"),
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors de l'analyse des performances: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -363,41 +749,16 @@ server.tool(
   },
   async ({ x, y, z, reason }) => {
     try {
-      // Obtenir l'objet joueur directement
-      const playerObject = gameState.scene.getObjectByName("player");
-      let result = false;
+      // Mettre à jour la position via la fonction centralisée
+      const position = { x, y, z };
+      const result = updatePlayerPosition(position);
       
-      if (playerObject) {
-        try {
-          // Déplacer le joueur dans le game state
-          playerObject.position.set(x, y, z);
-          gameState.player.position = { x, y, z };
-          result = true;
-          
-          // SOLUTION MULTI-APPROCHE: Utiliser toutes les méthodes possibles pour communiquer avec l'interface
-          
-          // 1. Méthode localStorage (la plus fiable)
-          console.error(`PLAYER_MOVE_COMMAND: localStorage.setItem('mcp_player_position', '${JSON.stringify({x, y, z})}');`);
-          
-          // 2. Méthode window.player directe
-          console.error(`PLAYER_MOVE_COMMAND: if (window.player && window.player.moveToPosition) window.player.moveToPosition(${x}, ${y}, ${z});`);
-          
-          // 3. Utiliser l'objet GameViewer global
-          console.error(`PLAYER_MOVE_COMMAND: if (window.gameViewer && window.gameViewer.scene) {
-            const player = window.gameViewer.scene.getObjectByName('player');
-            if (player) {
-              player.position.set(${x}, ${y}, ${z});
-              window.gameViewer.centerCameraOnPlayer && window.gameViewer.centerCameraOnPlayer(true);
-            }
-          }`);
-          
-          // 4. Dispatch un événement personnalisé que l'interface pourrait écouter
-          console.error(`PLAYER_MOVE_COMMAND: window.dispatchEvent(new CustomEvent('mcp-player-move', { detail: { x: ${x}, y: ${y}, z: ${z} } }));`);
-        } catch (error) {
-          console.error(`Erreur lors du déplacement: ${error.message}`);
-          result = false;
-        }
-      }
+      // Notifier l'UI du déplacement via le bus d'événements
+      eventBus.emit('server:send_to_ui', {
+        action: 'move_player',
+        position: position,
+        reason: reason || 'Commande émise par le serveur MCP'
+      });
       
       let message = result 
         ? `Joueur déplacé avec succès vers (${x}, ${y}, ${z}).` 
@@ -407,24 +768,23 @@ server.tool(
         message += ` Raison: ${reason}`;
       }
       
-      return {
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: message,
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors du déplacement du joueur: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -440,24 +800,32 @@ server.tool(
     try {
       const result = await gameState.interactWithObject(object_id);
       
-      return {
+      // Notifier l'UI de l'interaction
+      if (result.success) {
+        eventBus.emit('server:send_to_ui', {
+          action: 'object_interaction',
+          object_id: object_id,
+          result: result
+        });
+      }
+      
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: result.message,
           },
-        ],
-      };
+        ]
+      });
     } catch (error) {
-      return {
-        isError: true,
+      return toolResponseWrapper({
         content: [
           {
             type: "text",
             text: `Erreur lors de l'interaction: ${error.message}`,
           },
-        ],
-      };
+        ]
+      }, true);
     }
   }
 );
@@ -467,170 +835,4 @@ server.tool(
   "perform_action",
   "Fait exécuter une action spécifique au joueur",
   {
-    action_type: z.enum(["jump", "attack", "use_item"]).describe("Type d'action à effectuer"),
-    target_id: z.string().optional().describe("ID de la cible (pour les actions qui le requièrent)"),
-    item_id: z.string().optional().describe("ID de l'objet à utiliser (pour l'action use_item)"),
-  },
-  async ({ action_type, target_id, item_id }) => {
-    try {
-      const params = {};
-      if (target_id) params.targetId = target_id;
-      if (item_id) params.itemId = item_id;
-      
-      const result = await gameState.performAction(action_type, params);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: result.message,
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: `Erreur lors de l'exécution de l'action: ${error.message}`,
-          },
-        ],
-      };
-    }
-  }
-);
-
-// ------------------------------------------------
-// Définition des prompts
-// ------------------------------------------------
-
-server.prompt(
-  "game_difficulty_adjustment",
-  "Ajuste la difficulté du jeu en fonction du niveau de compétence du joueur",
-  [
-    {
-      name: "player_skill",
-      description: "Niveau de compétence du joueur (beginner, intermediate, expert)",
-      required: true,
-    },
-    {
-      name: "play_style",
-      description: "Style de jeu préféré (casual, balanced, challenging)",
-      required: true,
-    },
-    {
-      name: "game_aspect",
-      description: "Aspect du jeu à ajuster (combat, puzzles, exploration, all)",
-      required: false,
-    },
-  ],
-  async (args) => {
-    // Récupérer les données du joueur pour contextualiser la réponse
-    const playerData = await gameState.getPlayerData();
-    const playerSkill = args.player_skill || "intermediate";
-    const playStyle = args.play_style || "balanced";
-    const gameAspect = args.game_aspect || "all";
-    
-    // Créer un prompt personnalisé
-    return {
-      messages: [
-        {
-          role: "user",
-          content: {
-            type: "text",
-            text: `Je souhaite ajuster la difficulté du jeu pour un joueur de niveau ${playerSkill} qui préfère un style de jeu ${playStyle}. Concentre-toi sur l'aspect "${gameAspect}" du jeu.
-
-Voici les données actuelles du joueur:
-- Niveau: ${playerData.level}
-- Temps de jeu: ${playerData.playtime_hours} heures
-- Taux de réussite des combats: ${playerData.combat_success_rate}%
-- Taux de réussite des énigmes: ${playerData.puzzle_success_rate}%
-- Mort récente: ${playerData.last_death ? "Oui" : "Non"}
-- Objectif bloquant: ${playerData.stuck_on_objective ? playerData.current_objective : "Aucun"}
-
-Suggère des ajustements spécifiques pour équilibrer la difficulté en fonction de ces données, afin de maximiser le plaisir de jeu tout en maintenant un défi approprié. Inclus:
-1. Quels paramètres modifier et à quelles valeurs
-2. Quels types d'ennemis ou défis ajouter ou retirer
-3. Comment ajuster la courbe de progression
-4. Comment adapter l'expérience sans compromettre la conception du jeu
-5. Des indicateurs à surveiller pour vérifier que les ajustements fonctionnent
-
-Justifie chaque recommandation avec des principes de game design.`
-          }
-        }
-      ]
-    };
-  }
-);
-
-server.prompt(
-  "level_design_feedback",
-  "Analyse un niveau et fournit des retours pour l'améliorer",
-  [
-    {
-      name: "level_id",
-      description: "Identifiant du niveau à analyser",
-      required: true,
-    },
-    {
-      name: "focus_areas",
-      description: "Aspects à privilégier dans l'analyse (flow, difficulty, visual, all)",
-      required: false,
-    },
-  ],
-  async (args) => {
-    // Récupérer les données du niveau pour contextualiser la réponse
-    const levelData = await gameState.getLevelData(args.level_id);
-    const focusAreas = args.focus_areas || "all";
-    
-    return {
-      messages: [
-        {
-          role: "user",
-          content: {
-            type: "text",
-            text: `Analyse ce niveau de jeu et fournit des retours constructifs pour l'améliorer. Concentre-toi sur les aspects: ${focusAreas}.
-
-Informations sur le niveau "${levelData.name}":
-- Type: ${levelData.type}
-- Surface: ${levelData.area_size} unités² 
-- Densité d'objets: ${levelData.object_density}/10
-- Nombre d'ennemis: ${levelData.enemy_count}
-- Difficulté prévue: ${levelData.intended_difficulty}/10
-- Points de choix: ${levelData.choice_points}
-- Temps moyen de traversée: ${levelData.avg_completion_time} minutes
-- Pourcentage d'achèvement moyen: ${levelData.completion_percentage}%
-
-Points d'intérêt:
-${levelData.points_of_interest.map(poi => `- ${poi.name}: ${poi.description}`).join('\n')}
-
-Obstacles et challenges:
-${levelData.challenges.map(c => `- ${c.type}: ${c.description} (difficulté: ${c.difficulty}/10)`).join('\n')}
-
-Analyse ce niveau en termes de principles de game design comme le flow, la difficulté progressive, l'affordance, la lisibilité visuelle, les récompenses et la satisfaction de jeu. Identifie les forces et les faiblesses, puis propose des améliorations concrètes et justifiées.`
-          }
-        }
-      ]
-    };
-  }
-);
-
-// ------------------------------------------------
-// Démarrage du serveur
-// ------------------------------------------------
-
-async function main() {
-  // Initialiser la connexion au jeu
-  await gameState.initialize();
-  
-  // Démarrer le serveur MCP
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Game Assistant MCP Server is running");
-}
-
-main().catch(error => {
-  console.error("Error starting server:", error);
-  process.exit(1);
-});
+    action_type: z.enum(["jump", "attack
