@@ -2,18 +2,43 @@
   "nodes": {
     "server": {
       "type": "server",
-      "connected": true,
-      "lastSeen": "2025-03-18T16:21:16.644Z"
+      "connected": false,
+      "lastSeen": "2025-03-19T01:15:28.295Z",
+      "capabilities": {
+        "tools": true,
+        "resources": true,
+        "prompts": true
+      }
     },
     "client-b": {
       "type": "client",
-      "connected": true,
-      "lastSeen": "2025-03-18T16:18:51.383Z"
+      "connected": false,
+      "lastSeen": "2025-03-19T01:15:28.296Z",
+      "capabilities": {
+        "tools": true,
+        "resources": true,
+        "prompts": true
+      }
     },
     "client-a": {
       "type": "client",
-      "connected": true,
-      "lastSeen": "2025-03-18T16:18:51.383Z"
+      "connected": false,
+      "lastSeen": "2025-03-19T01:15:28.297Z",
+      "capabilities": {
+        "tools": true,
+        "resources": true,
+        "prompts": true
+      }
+    },
+    "claude-desktop": {
+      "type": "llm",
+      "connected": false,
+      "lastSeen": "2025-03-19T01:15:28.297Z",
+      "capabilities": {
+        "tools": false,
+        "resources": false,
+        "prompts": false
+      }
     }
   },
   "tools": {
@@ -21,31 +46,198 @@
       "id": "server.base-tool",
       "nodeId": "server",
       "name": "base-tool",
-      "description": "Outil de base du serveur"
+      "description": "Outil de base du serveur",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          }
+        }
+      }
     },
     "client-b.tool3": {
       "id": "client-b.tool3",
       "nodeId": "client-b",
       "name": "tool3",
-      "description": "Premier outil du client B"
+      "description": "Premier outil du client B",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "param": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          }
+        }
+      }
     },
     "client-b.tool4": {
       "id": "client-b.tool4",
       "nodeId": "client-b",
       "name": "tool4",
-      "description": "Second outil du client B"
+      "description": "Second outil du client B",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "param": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          }
+        }
+      }
     },
     "client-a.tool1": {
       "id": "client-a.tool1",
       "nodeId": "client-a",
       "name": "tool1",
-      "description": "Premier outil du client A"
+      "description": "Premier outil du client A",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "param": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          }
+        }
+      }
     },
     "client-a.tool2": {
       "id": "client-a.tool2",
       "nodeId": "client-a",
       "name": "tool2",
-      "description": "Second outil du client A"
+      "description": "Second outil du client A",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "param": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "server.data-analyzer": {
+      "id": "server.data-analyzer",
+      "nodeId": "server",
+      "name": "data-analyzer",
+      "description": "Analyse des données",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dataset": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "resources": {
+    "server://data/config": {
+      "uri": "server://data/config",
+      "nodeId": "server",
+      "name": "Configuration",
+      "description": "Fichier de configuration du serveur",
+      "mimeType": "application/json"
+    },
+    "server://data/status": {
+      "uri": "server://data/status",
+      "nodeId": "server",
+      "name": "Statut du serveur",
+      "description": "Statut actuel du serveur",
+      "mimeType": "text/plain"
+    },
+    "client-a://data/resource1": {
+      "uri": "client-a://data/resource1",
+      "nodeId": "client-a",
+      "name": "Resource 1",
+      "description": "Première ressource du client A",
+      "mimeType": "text/plain"
+    },
+    "client-a://data/resource2": {
+      "uri": "client-a://data/resource2",
+      "nodeId": "client-a",
+      "name": "Resource 2",
+      "description": "Seconde ressource du client A",
+      "mimeType": "application/json"
+    },
+    "client-b://data/report": {
+      "uri": "client-b://data/report",
+      "nodeId": "client-b",
+      "name": "Rapport mensuel",
+      "description": "Rapport mensuel du client B",
+      "mimeType": "text/plain"
+    },
+    "client-b://images/logo": {
+      "uri": "client-b://images/logo",
+      "nodeId": "client-b",
+      "name": "Logo",
+      "description": "Logo du client B",
+      "mimeType": "image/png"
+    }
+  },
+  "prompts": {
+    "server.system-status": {
+      "id": "server.system-status",
+      "nodeId": "server",
+      "name": "Statut du système",
+      "description": "Génère un rapport de statut du système",
+      "arguments": [
+        {
+          "name": "format",
+          "description": "Format du rapport (court/détaillé)",
+          "required": false
+        }
+      ]
+    },
+    "client-a.greeting": {
+      "id": "client-a.greeting",
+      "nodeId": "client-a",
+      "name": "Salutation personnalisée",
+      "description": "Génère une salutation personnalisée",
+      "arguments": [
+        {
+          "name": "name",
+          "description": "Nom de la personne à saluer",
+          "required": true
+        },
+        {
+          "name": "formal",
+          "description": "Style formel ou informel",
+          "required": false
+        }
+      ]
+    },
+    "client-b.welcome": {
+      "id": "client-b.welcome",
+      "nodeId": "client-b",
+      "name": "Message de bienvenue",
+      "description": "Génère un message de bienvenue personnalisé",
+      "arguments": [
+        {
+          "name": "name",
+          "description": "Nom de la personne à accueillir",
+          "required": true
+        },
+        {
+          "name": "language",
+          "description": "Langue du message",
+          "required": false
+        }
+      ]
     }
   }
 }
